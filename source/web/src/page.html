@@ -1,0 +1,435 @@
+<title>Grid-Friendly Battery Planner</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Build a distribution grid, place a battery, and find the charging schedule that relieves lines and transformers the most. Runs entirely in your browser.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: control-room tool. Sticky header with tabs; Network view = toolbar | single-line diagram | inspector.
+   Voltage-level colour coding (HV wine, MV blue, LV olive) as on utility SLDs; loading on a semantic heat scale. */
+:root {
+  --bg: #eef2f1; --panel: #f8fafa; --raise: #ffffff; --ink: #14211e; --ink-2: #485955; --muted: #74837f;
+  --line: #d2dbd9; --grid: #e2e8e6; --accent: #0d6b61; --accent-ink: #ffffff; --accent-soft: #d6ebe7;
+  --hv: #9a3b55; --mv: #2f63a6; --lv: #5d7b26; --battery: #c25e17;
+  --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --crit: #d03b3b;
+  --before: #9aa5a2; --after: #2a78d6; --shadow: 0 1px 2px rgba(20,33,30,.06), 0 4px 16px rgba(20,33,30,.06);
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", "Roboto Condensed", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --r: 6px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0d1312; --panel: #131b1a; --raise: #19221f; --ink: #e2eae8; --ink-2: #b0bebb; --muted: #7e8d89;
+  --line: #2a3533; --grid: #1f2927; --accent: #3db1a2; --accent-ink: #052019; --accent-soft: #15362f;
+  --hv: #e07b97; --mv: #6fa3e8; --lv: #9cc45a; --battery: #f08c3e;
+  --before: #6b7774; --after: #3987e5; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0d1312; --panel: #131b1a; --raise: #19221f; --ink: #e2eae8; --ink-2: #b0bebb; --muted: #7e8d89;
+  --line: #2a3533; --grid: #1f2927; --accent: #3db1a2; --accent-ink: #052019; --accent-soft: #15362f;
+  --hv: #e07b97; --mv: #6fa3e8; --lv: #9cc45a; --battery: #f08c3e;
+  --before: #6b7774; --after: #3987e5; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+  color-scheme: dark; }
+
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--f-body); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 30; background: var(--panel); }
+* { box-sizing: border-box; }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; letter-spacing: .005em; }
+h2 { font-size: 20px; font-weight: 600; }
+h3 { font-size: 15px; font-weight: 600; }
+.num, .mono { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.eyebrow { font: 600 11px/1.2 var(--f-display); text-transform: uppercase; letter-spacing: .09em; color: var(--muted); }
+.muted { color: var(--muted); }
+.sub { color: var(--ink-2); }
+a { color: var(--accent); }
+
+/* ---------- header ---------- */
+.top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--panel); border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 16px 24px; flex-wrap: wrap;
+  padding-block: 10px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand b { font: 700 18px/1.1 var(--f-display); display: block; }
+.brand span { font-size: 12px; color: var(--muted); }
+.tabs { display: flex; gap: 2px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
+.tabs button { border: 0; background: transparent; padding: 6px 14px; border-radius: 5px; cursor: pointer; font: 600 13px var(--f-display); letter-spacing: .02em; color: var(--ink-2); }
+.tabs button[aria-selected="true"] { background: var(--raise); color: var(--ink); box-shadow: var(--shadow); }
+.tabs .count { font: 500 11px var(--f-mono); color: var(--accent); margin-left: 4px; }
+.engine { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: none; }
+.dot.ok { background: var(--good); } .dot.err { background: var(--crit); }
+.dot.busy { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+
+main { padding-block: 16px 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.view { max-width: 1480px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+
+/* ---------- buttons & fields ---------- */
+.btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--raise); padding: 6px 12px; border-radius: var(--r); cursor: pointer; font-size: 13px; white-space: nowrap; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.ghost { background: transparent; border-color: transparent; }
+.btn.danger { color: var(--crit); }
+.btn svg { width: 16px; height: 16px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.spacer { flex: 1; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.seg button { border: 0; background: var(--raise); padding: 6px 12px; cursor: pointer; font-size: 13px; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+label.f { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-2); min-width: 0; }
+label.f span.u { color: var(--muted); }
+.f input, .f select, input.cell, select.cell { border: 1px solid var(--line); background: var(--raise); border-radius: 5px; padding: 5px 8px; font-size: 13px; width: 100%; min-width: 0; }
+.f input[type="number"], input.cell[type="number"] { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.f input:focus, .f select:focus, input.cell:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
+.card > h3 + * { margin-top: 10px; }
+.note { font-size: 12px; color: var(--ink-2); background: var(--bg); border-radius: 6px; padding: 8px 10px; }
+.note.warn { border-left: 3px solid var(--warn); }
+.note.err { border-left: 3px solid var(--crit); }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); }
+.chip i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+
+/* ---------- network view ---------- */
+.netbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.netname { font: 600 16px var(--f-display); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.netgrid { display: grid; grid-template-columns: 52px minmax(0, 1fr) 320px; gap: 12px; min-height: 620px; }
+.toolbar { display: flex; flex-direction: column; gap: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px; align-self: start; }
+.tool { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 6px; background: transparent; cursor: pointer; color: var(--ink-2); position: relative; }
+.tool:hover { background: var(--bg); }
+.tool[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.tool svg { width: 22px; height: 22px; }
+.toolbar hr { border: 0; border-top: 1px solid var(--line); margin: 4px 2px; width: auto; }
+.canvas-wrap { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-height: 560px; touch-action: none; }
+.canvas-wrap svg.sld { position: absolute; inset: 0; width: 100%; height: 100%; display: block; user-select: none; -webkit-user-select: none; }
+.canvas-wrap.tool-bus svg.sld, .canvas-wrap.tool-pick svg.sld { cursor: crosshair; }
+.hint { position: absolute; left: 12px; top: 10px; font-size: 12px; color: var(--ink-2); background: var(--raise); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; pointer-events: none; max-width: calc(100% - 24px); }
+.zoombar { position: absolute; right: 10px; top: 10px; display: flex; gap: 4px; }
+.zoombar .btn { padding: 4px 8px; }
+.legend { position: absolute; left: 12px; bottom: 10px; right: 12px; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--ink-2); pointer-events: none; align-items: center; }
+.legend .sw { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+.heatbar { width: 120px; height: 6px; border-radius: 3px; display: inline-block; vertical-align: middle; margin: 0 6px; }
+.inspector { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 12px; align-self: start; max-height: calc(100vh - 140px); overflow: auto; }
+.inspector .head { display: flex; align-items: flex-start; gap: 8px; }
+.inspector .head h3 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: var(--f-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.attached { display: flex; flex-direction: column; gap: 4px; }
+.attached button { text-align: left; border: 1px solid var(--line); background: var(--raise); border-radius: 6px; padding: 5px 8px; cursor: pointer; font-size: 12px; display: flex; gap: 8px; align-items: center; }
+.attached button:hover { border-color: var(--muted); }
+
+/* svg elements */
+.sld .busbar { stroke-linecap: round; }
+.sld .hit { stroke: transparent; fill: transparent; cursor: pointer; }
+.sld .lbl { font: 500 11px var(--f-body); fill: var(--ink-2); }
+.sld .lbl.kv { font: 400 10px var(--f-mono); fill: var(--muted); }
+.sld .val { font: 500 10px var(--f-mono); fill: var(--ink); paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
+.sld .sel { stroke: var(--accent); stroke-opacity: .28; fill: none; }
+.sld .pending { stroke: var(--accent); stroke-dasharray: 4 3; fill: none; }
+
+/* tables */
+.tblwrap { overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); max-height: 70vh; }
+table.t { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.t th { position: sticky; top: 0; background: var(--panel); text-align: left; font: 600 11px var(--f-display); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding: 8px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; z-index: 1; }
+table.t td { padding: 3px 6px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+table.t td.n { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+table.t tr:hover td { background: var(--bg); }
+table.t tr.sel td { background: var(--accent-soft); }
+table.t input.cell, table.t select.cell { padding: 3px 6px; min-width: 70px; }
+table.t input.cell[type="number"] { width: 92px; text-align: right; }
+.subtabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.subtabs button { border: 1px solid var(--line); background: var(--raise); padding: 4px 10px; border-radius: 999px; cursor: pointer; font-size: 12px; }
+.subtabs button[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+
+/* ---------- study view ---------- */
+.studygrid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.span4 { grid-column: span 4; } .span5 { grid-column: span 5; } .span6 { grid-column: span 6; } .span7 { grid-column: span 7; } .span8 { grid-column: span 8; } .span12 { grid-column: span 12; }
+.choice { display: grid; gap: 8px; }
+.choice label { display: grid; grid-template-columns: 18px 1fr; gap: 2px 8px; border: 1px solid var(--line); background: var(--raise); border-radius: 8px; padding: 9px 11px; cursor: pointer; }
+.choice label:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.choice input { margin: 3px 0 0; accent-color: var(--accent); grid-row: span 2; }
+.choice b { font-weight: 600; font-size: 13px; }
+.choice small { color: var(--ink-2); font-size: 12px; grid-column: 2; }
+.profgrid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 3px; }
+.profgrid input { width: 100%; font: 11px var(--f-mono); padding: 3px 2px; text-align: center; border: 1px solid var(--line); border-radius: 4px; background: var(--raise); min-width: 0; }
+.runbar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.progress { flex: 1; min-width: 220px; }
+.progress .bar { height: 6px; background: var(--grid); border-radius: 3px; overflow: hidden; }
+.progress .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+.progress .txt { font-size: 12px; color: var(--ink-2); margin-top: 4px; }
+
+/* ---------- results ---------- */
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+.kpi .big { font: 600 24px/1.2 var(--f-body); margin-top: 4px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.kpi .big .from { font-size: 15px; color: var(--muted); font-weight: 500; }
+.kpi .big .arr { color: var(--muted); font-size: 14px; }
+.kpi .d { font-size: 12px; margin-top: 2px; }
+.d.good { color: #0a7d0a; } .d.bad { color: var(--crit); }
+:root[data-theme="dark"] .d.good { color: #3fc43f; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .d.good { color: #3fc43f; } }
+.resgrid { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 14px; align-items: start; }
+.chart { position: relative; }
+.chart .uplot { font-family: var(--f-body); }
+.chart-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.chart-title .muted { font-size: 12px; }
+.leg { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); flex-wrap: wrap; }
+.leg i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 5px; border-radius: 1px; }
+.leg i.dotk { width: 9px; height: 9px; border-radius: 50%; }
+.tip { position: absolute; pointer-events: none; background: var(--raise); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: 6px; padding: 6px 9px; font-size: 12px; z-index: 5; white-space: nowrap; }
+.tip b { font-family: var(--f-mono); font-weight: 500; }
+.tip .k { display: inline-block; width: 10px; height: 2px; vertical-align: middle; margin-right: 6px; }
+.dumb .row-hit { fill: transparent; cursor: default; }
+.dumb .row-hit:hover { fill: var(--bg); }
+.mapctl { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.mapctl input[type="range"] { flex: 1; min-width: 160px; accent-color: var(--accent); }
+.mapwrap { position: relative; height: 480px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; }
+.mapwrap svg { width: 100%; height: 100%; display: block; }
+.rank tbody tr { cursor: pointer; }
+.rank td.best { font-weight: 600; }
+.empty { text-align: center; padding: 56px 16px; color: var(--ink-2); }
+.empty h2 { margin-bottom: 6px; }
+
+/* uPlot (inlined stylesheet, themed) */
+.uplot, .uplot *, .uplot *::before, .uplot *::after { box-sizing: border-box; }
+.uplot { line-height: 1.5; width: min-content; }
+.u-title { text-align: center; font-size: 18px; font-weight: bold; }
+.u-wrap { position: relative; user-select: none; }
+.u-over, .u-under { position: absolute; }
+.u-under { overflow: hidden; }
+.uplot canvas { display: block; position: relative; width: 100%; height: 100%; }
+.u-axis { position: absolute; }
+.u-legend { display: none; }
+.u-select { background: rgba(13,107,97,.10); position: absolute; pointer-events: none; }
+.u-cursor-x, .u-cursor-y { position: absolute; left: 0; top: 0; pointer-events: none; will-change: transform; }
+.u-hz .u-cursor-x, .u-vt .u-cursor-y { height: 100%; border-right: 1px solid var(--muted); }
+.u-hz .u-cursor-y, .u-vt .u-cursor-x { width: 100%; border-bottom: 0; }
+.u-cursor-pt { position: absolute; top: 0; left: 0; border-radius: 50%; border: 0 solid; pointer-events: none; will-change: transform; background-clip: padding-box !important; }
+.u-axis.u-off, .u-select.u-off, .u-cursor-x.u-off, .u-cursor-y.u-off, .u-cursor-pt.u-off { display: none; }
+
+/* method */
+.prose { max-width: 72ch; }
+.prose p, .prose li { color: var(--ink-2); }
+.prose h3 { margin-top: 18px; }
+.prose code { font-family: var(--f-mono); font-size: 12px; background: var(--bg); padding: 1px 4px; border-radius: 3px; }
+.formula { font-family: var(--f-mono); font-size: 12.5px; background: var(--bg); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: pre; color: var(--ink); }
+
+/* modal */
+.modal { position: fixed; inset: 0; background: rgba(8,14,13,.45); display: grid; place-items: center; z-index: 50; padding: 16px; }
+.modal .box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; width: min(760px, 100%); max-height: 90vh; display: flex; flex-direction: column; gap: 10px; padding: 16px; box-shadow: var(--shadow); }
+.modal textarea { width: 100%; flex: 1; min-height: 300px; font: 12px/1.45 var(--f-mono); border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: var(--raise); resize: vertical; }
+.toast { position: fixed; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--panel); padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 60; max-width: calc(100% - 32px); }
+
+@media (max-width: 1100px) {
+  .netgrid { grid-template-columns: 52px minmax(0, 1fr); }
+  .inspector { grid-column: 1 / -1; max-height: none; }
+  .resgrid { grid-template-columns: minmax(0, 1fr); }
+  .span4, .span5, .span6, .span7, .span8 { grid-column: span 12; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .netgrid { grid-template-columns: minmax(0, 1fr); }
+  .toolbar { flex-direction: row; flex-wrap: wrap; }
+  .toolbar hr { display: none; }
+  .canvas-wrap { min-height: 440px; }
+  .hint { display: none; }
+  .legend { font-size: 10px; gap: 4px 10px; }
+  .engine { margin-left: 0; }
+  .grid3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .profgrid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .kpis { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<header class="top">
+  <div class="brand">
+    <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">
+      <rect x="1" y="1" width="32" height="32" rx="7" fill="var(--accent)"/>
+      <path d="M7 11h20M7 23h20" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M12 11v12M22 11v12" stroke="var(--accent-ink)" stroke-width="1.6"/>
+      <rect x="14" y="14.5" width="6" height="5" rx="1" fill="var(--battery)" stroke="var(--accent-ink)" stroke-width="1"/>
+    </svg>
+    <div><b>Grid-Friendly Battery Planner</b><span>Where and when a battery relieves your distribution grid</span></div>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button role="tab" id="tab-network" aria-selected="true" data-view="network">Network</button>
+    <button role="tab" id="tab-study" aria-selected="false" data-view="study">Study</button>
+    <button role="tab" id="tab-results" aria-selected="false" data-view="results">Results<span class="count" id="rescount"></span></button>
+    <button role="tab" id="tab-method" aria-selected="false" data-view="method">Method</button>
+  </nav>
+  <div class="engine" id="engine" aria-live="polite"><span class="dot busy"></span><span id="engine-txt">Starting the engine…</span></div>
+</header>
+
+<main>
+  <!-- ======================= NETWORK ======================= -->
+  <section class="view" id="view-network">
+    <div class="netbar">
+      <div class="netname" id="netname">CIGRE MV</div>
+      <span class="chip" id="netstats"></span>
+      <span class="spacer"></span>
+      <div class="seg" role="group" aria-label="View">
+        <button id="vw-diagram" aria-pressed="true">Diagram</button>
+        <button id="vw-tables" aria-pressed="false">Tables</button>
+      </div>
+      <button class="btn" id="btn-new">New</button>
+      <button class="btn" id="btn-cigre">CIGRE MV example</button>
+      <label class="btn" for="file-import">Import JSON…</label>
+      <input type="file" id="file-import" accept=".json,application/json" hidden>
+      <button class="btn" id="btn-export">Export</button>
+      <button class="btn primary" id="btn-check">Check network</button>
+    </div>
+    <div id="net-msg"></div>
+    <div class="netgrid" id="netgrid">
+      <div class="toolbar" role="toolbar" aria-label="Drawing tools" id="toolbar"></div>
+      <div class="canvas-wrap" id="canvas-wrap">
+        <svg class="sld" id="sld" role="img" aria-label="Single-line diagram of the network"></svg>
+        <div class="hint" id="hint">Drag buses to move them. Scroll or pinch to zoom, drag the background to pan.</div>
+        <div class="zoombar"><button class="btn" id="z-in" aria-label="Zoom in">+</button><button class="btn" id="z-out" aria-label="Zoom out">−</button><button class="btn" id="z-fit">Fit</button></div>
+        <div class="legend" id="legend"></div>
+      </div>
+      <aside class="inspector" id="inspector" aria-label="Selected element"></aside>
+    </div>
+    <div id="tables" hidden></div>
+  </section>
+
+  <!-- ======================= STUDY ======================= -->
+  <section class="view" id="view-study" hidden>
+    <div class="studygrid">
+      <div class="card span7" id="card-weather">
+        <h3>Period and weather</h3>
+        <p class="sub" style="margin:6px 0 10px;font-size:13px">PV output follows global irradiance and wind turbines follow wind speed at 100 m, hour by hour.</p>
+        <div class="grid3">
+          <label class="f">Place<select id="w-place"></select></label>
+          <label class="f">Latitude<input id="w-lat" type="number" step="0.01"></label>
+          <label class="f">Longitude<input id="w-lon" type="number" step="0.01"></label>
+          <label class="f">Start date<input id="w-start" type="date"></label>
+          <label class="f"><span>Length <span class="u">days</span></span><input id="w-days" type="number" min="1" max="366" step="1"></label>
+          <label class="f">Quick pick<select id="w-quick"><option value="">Choose…</option><option value="7">1 week</option><option value="28">4 weeks</option><option value="91">Quarter</option><option value="365">Full year</option></select></label>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <span class="eyebrow">Source</span>
+          <button class="btn" id="w-fetch">Fetch from Open-Meteo</button>
+          <button class="btn" id="w-synth">Use synthetic example</button>
+          <label class="btn" for="w-csv">Upload Open-Meteo CSV…</label>
+          <input type="file" id="w-csv" accept=".csv,text/csv" hidden>
+        </div>
+        <div id="w-status" style="margin-top:10px"></div>
+      </div>
+      <div class="card span5">
+        <h3>Battery</h3>
+        <div class="grid2" style="margin-top:10px">
+          <label class="f"><span>Power <span class="u">MW, charge and discharge</span></span><input id="b-mw" type="number" step="0.1" min="0.01"></label>
+          <label class="f"><span>Energy <span class="u">MWh</span></span><input id="b-mwh" type="number" step="0.5" min="0.01"></label>
+          <label class="f"><span>Charging efficiency <span class="u">%</span></span><input id="b-etac" type="number" step="0.5" min="50" max="100"></label>
+          <label class="f"><span>Discharging efficiency <span class="u">%</span></span><input id="b-etad" type="number" step="0.5" min="50" max="100"></label>
+          <label class="f"><span>State of charge at start and end <span class="u">% of energy</span></span><input id="b-soc" type="number" step="5" min="0" max="100"></label>
+          <label class="f">Placement<select id="b-bus"></select></label>
+        </div>
+        <p class="muted" style="font-size:12px;margin:10px 0 0">The battery runs at unity power factor and ends the period with the energy it started with.</p>
+      </div>
+      <div class="card span6">
+        <h3>What “grid-friendly” means</h3>
+        <div class="choice" style="margin-top:10px" id="obj-choice">
+          <label><input type="radio" name="obj" value="minmax"><b>Objective 1 · Lower the average peak</b><small>Minimise the mean of every line’s and transformer’s highest loading in the period (LP).</small></label>
+          <label><input type="radio" name="obj" value="quadratic_peak"><b>Objective 3 · Punish the worst peaks hardest</b><small>Minimise the weighted sum of squared peak loadings, so the most loaded element is relieved first (QP).</small></label>
+        </div>
+        <div class="grid2" style="margin-top:10px" id="weights">
+          <label class="f">Weight on lines<input id="o-wl" type="number" step="0.5" min="0"></label>
+          <label class="f">Weight on transformers<input id="o-wt" type="number" step="0.5" min="0"></label>
+        </div>
+      </div>
+      <div class="card span6">
+        <h3>How the grid’s response is modelled</h3>
+        <div class="choice" style="margin-top:10px" id="model-choice">
+          <label><input type="radio" name="model" value="tangent"><b>Sensitivity at the peak hour</b><small>Fastest. One linear sensitivity per element, measured with AC load flows in the busiest hour.</small></label>
+          <label><input type="radio" name="model" value="tangent_hourly"><b>Hourly sensitivities</b><small>A sensitivity for every hour, so night and day differ.</small></label>
+          <label><input type="radio" name="model" value="piecewise"><b>Piecewise linear AC model</b><small>Most accurate. Measures the real AC loading at several battery power levels each hour.</small></label>
+        </div>
+        <div class="grid2" style="margin-top:10px">
+          <label class="f"><span>Probe power for sensitivities <span class="u">MW</span></span><input id="m-probe" type="number" step="0.5" min="0.1"></label>
+          <label class="f">Power levels (piecewise)<input id="m-levels" type="number" step="2" min="3" max="21"></label>
+        </div>
+      </div>
+      <div class="card span12">
+        <h3>Load profiles</h3>
+        <p class="sub" style="margin:6px 0 10px;font-size:13px">Share of each load’s rated power, hour 00 to 23, repeated every day. Defaults: CIGRE TB 575, Fig. 6.4.</p>
+        <div id="profiles" class="grid2"></div>
+      </div>
+      <div class="card span12">
+        <div class="runbar">
+          <div class="seg" role="group" aria-label="What to run">
+            <button id="r-one" aria-pressed="true">One placement</button>
+            <button id="r-all" aria-pressed="false">Compare all placements</button>
+          </div>
+          <span class="muted" id="r-est" style="font-size:12px"></span>
+          <div class="progress" id="r-progress" hidden><div class="bar"><i id="r-bar"></i></div><div class="txt" id="r-txt"></div></div>
+          <span class="spacer"></span>
+          <button class="btn" id="r-cancel" hidden>Cancel</button>
+          <button class="btn primary" id="r-run">Run study</button>
+        </div>
+        <div id="r-msg"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= RESULTS ======================= -->
+  <section class="view" id="view-results" hidden></section>
+
+  <!-- ======================= METHOD ======================= -->
+  <section class="view" id="view-method" hidden>
+    <div class="card prose">
+      <span class="eyebrow">Method</span>
+      <h2 style="margin-top:4px">From a network to a grid-friendly schedule</h2>
+      <p>The planner answers one question: if a battery sits at a given bus, when should it charge and discharge so that the lines and transformers of the whole network carry as little peak load as possible? It follows four steps, and every number shown under Results comes from step 4.</p>
+      <h3>1. Baseline year</h3>
+      <p>Every hour gets a full AC load flow (Newton-Raphson) without a battery. Loads follow their daily profile; PV follows irradiance relative to 1000 W/m²; wind turbines follow a generic cubic power curve (cut-in 3 m/s, rated 12 m/s, cut-out 25 m/s).</p>
+      <h3>2. How the grid responds to the battery</h3>
+      <p>The planner measures, with AC load flows, how each element’s loading changes when the battery injects or absorbs power. Three options trade speed for accuracy: one sensitivity per element at the busiest hour, a sensitivity for every hour, or the real loading at several power levels each hour (a convex, piecewise linear model).</p>
+      <h3>3. Optimise the schedule</h3>
+      <div class="formula">Objective 1   minimise  (1/n) Σₗ peakₗ
+Objective 3   minimise  Σₗ wₗ · peakₗ²
+subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every element l and hour t
+              soc[t] = soc[t−1] + ηc·charge[t] − discharge[t]/ηd
+              0 ≤ charge, discharge ≤ P,   0 ≤ soc ≤ E,   soc at the end = soc at the start</div>
+      <p>Objective 1 is a linear programme solved with HiGHS; objective 3 and the piecewise model are solved with Clarabel. The piecewise model is solved twice: the second pass locks each hour to charging, discharging or idle, so the battery never charges and discharges at the same time.</p>
+      <h3>4. Validate</h3>
+      <p>The schedule is run through a new AC time series with the battery in place. Loadings, voltages and the exchange with the transmission grid are reported from this run, not from the optimisation model.</p>
+      <h3>Assumptions</h3>
+      <ul>
+        <li>One battery at a time, unity power factor, hourly steps.</li>
+        <li>Fixed topology and transformer taps over the period. Loads are constant power.</li>
+        <li>Supported elements: buses, external grids, lines, two-winding transformers, line switches, shunts, loads and static generators (PV and wind).</li>
+        <li>Thermal loading is current relative to the line’s <code>max_i_ka</code> or the transformer’s rated current, as in pandapower.</li>
+      </ul>
+      <h3>Accuracy</h3>
+      <p>The load flow reproduces pandapower and lightsim2grid to within 10⁻⁶ percentage points on the CIGRE MV network and on 40 randomly generated test networks. On CIGRE MV it reproduces the optimised peak loadings of the original Python study for all three models and both objectives.</p>
+      <h3>Runs on your computer</h3>
+      <p>The engine is Python (numpy, scipy, HiGHS, Clarabel) compiled to WebAssembly with Pyodide, and it runs in your browser. Nothing you enter leaves your device. The first visit downloads about 31 MB, which the browser then keeps.</p>
+      <p class="muted">Built by August Esbensen. Network data: CIGRE TB 575 European MV benchmark. Weather: Open-Meteo historical weather API (ERA5).</p>
+    </div>
+  </section>
+</main>
+
+<div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="box">
+    <div class="row"><h3 id="modal-title">Export</h3><span class="spacer"></span><button class="btn ghost" id="modal-close" aria-label="Close">Close</button></div>
+    <div class="row" id="modal-tabs"></div>
+    <p class="muted" id="modal-note" style="margin:0;font-size:12px"></p>
+    <textarea id="modal-text" spellcheck="false" readonly></textarea>
+    <div class="row"><span class="spacer"></span><button class="btn primary" id="modal-copy">Copy</button></div>
+  </div>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
+<script>
+/*APP_JS*/
+</script>

@@ -1,0 +1,1166 @@
+"use strict";
+/* Grid-Friendly Battery Planner -- browser front end.
+   The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
+
+// ============================================================ utilities
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const clone = (o) => JSON.parse(JSON.stringify(o));
+const fmt = (v, d = 1) => (v == null || !isFinite(v) ? "–" : Number(v).toLocaleString("en-GB", { minimumFractionDigits: d, maximumFractionDigits: d }));
+const fmtSigned = (v, d = 1) => (v == null || !isFinite(v) ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "±") + fmt(Math.abs(v), d));
+function h(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") e.className = v;
+    else if (k === "text") e.textContent = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (k === "style" && typeof v === "object") Object.assign(e.style, v);
+    else e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return e;
+}
+function svgEl(attrs = {}) {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("gfbp:" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("gfbp:" + k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
+};
+let toastTimer = null;
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 3200);
+}
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+// loading % -> semantic heat colour
+const HEAT = [[0, [76, 175, 122]], [60, [31, 157, 85]], [80, [233, 168, 18]], [100, [208, 59, 59]], [130, [122, 20, 20]]];
+function heat(v) {
+  if (v == null || !isFinite(v)) return cssVar("--muted");
+  if (v <= HEAT[0][0]) return `rgb(${HEAT[0][1]})`;
+  for (let i = 1; i < HEAT.length; i++) {
+    if (v <= HEAT[i][0]) {
+      const [a, ca] = HEAT[i - 1], [b, cb] = HEAT[i]; const f = (v - a) / (b - a);
+      return `rgb(${ca.map((c, j) => Math.round(c + (cb[j] - c) * f)).join(",")})`;
+    }
+  }
+  return `rgb(${HEAT[HEAT.length - 1][1]})`;
+}
+const heatGradient = () => `linear-gradient(90deg, ${[0, 30, 60, 80, 100].map((v) => heat(v) + " " + (v / 100 * 100) + "%").join(",")})`;
+
+// ============================================================ engine client
+class Engine {
+  constructor(onStatus) {
+    this.onStatus = onStatus || (() => {});
+    this.seq = 0; this.pending = new Map(); this.ready = false; this.failed = null;
+    this.readyP = new Promise((res, rej) => { this._res = res; this._rej = rej; });
+    try {
+      this.w = new Worker(new URL("worker.js", location.href), { type: "module" });
+    } catch (e) { this.fail("Your browser could not start a background worker: " + e.message); return; }
+    this.w.onmessage = (ev) => this.msg(ev.data);
+    this.w.onerror = (ev) => { if (!this.ready) this.fail("The engine could not load (" + (ev.message || "script error") + ")."); };
+  }
+  fail(m) { this.failed = m; this.onStatus("error", m); this._rej(new Error(m)); for (const p of this.pending.values()) p.rej(new Error(m)); this.pending.clear(); }
+  msg(d) {
+    if (d.type === "boot") return this.onStatus("boot", d.stage);
+    if (d.type === "ready") { this.ready = true; this.onStatus("ready"); return this._res(); }
+    if (d.type === "fatal") return this.fail("The Python engine failed to start: " + d.error);
+    if (d.type === "progress") { const p = this.pending.get(d.id); if (p && p.onProgress) p.onProgress(d.stage, d.frac); return; }
+    const p = this.pending.get(d.id); if (!p) return;
+    this.pending.delete(d.id);
+    d.ok ? p.res(d.result) : p.rej(new Error(d.error));
+  }
+  call(cmd, args, onProgress) {
+    if (this.failed) return Promise.reject(new Error(this.failed));
+    const id = ++this.seq;
+    return new Promise((res, rej) => { this.pending.set(id, { res, rej, onProgress }); this.w.postMessage({ id, cmd, args }); });
+  }
+  async json(cmd, args, onProgress) { return JSON.parse(await this.call(cmd, args, onProgress)); }
+  terminate() { try { this.w.terminate(); } catch { /* already gone */ } for (const p of this.pending.values()) p.rej(new Error("Cancelled")); this.pending.clear(); }
+}
+let engine = null;
+function startEngine() {
+  const dot = $("#engine .dot"), txt = $("#engine-txt");
+  dot.className = "dot busy"; txt.textContent = "Starting the engine…";
+  engine = new Engine((kind, info) => {
+    if (kind === "boot") txt.textContent = info + "…";
+    if (kind === "ready") { dot.className = "dot ok"; txt.textContent = "Engine ready · runs in your browser"; onEngineReady(); }
+    if (kind === "error") { dot.className = "dot err"; txt.textContent = "Engine unavailable"; showNetMsg("err", info); }
+  });
+}
+
+// ============================================================ state
+const DEFAULT_STUDY = {
+  place: "Aarhus", lat: 56.15, lon: 10.21, start: "2025-01-13", days: 7,
+  mw: 4, mwh: 16, eta_c: 95, eta_d: 95, soc: 50, bus: 8,
+  objective: "minmax", model: "piecewise", wl: 1, wt: 1, probe: 2, levels: 9, mode: "one",
+};
+const PLACES = { Aarhus: [56.15, 10.21], "Copenhagen": [55.68, 12.57], Odense: [55.40, 10.39], Aalborg: [57.05, 9.92], Esbjerg: [55.48, 8.45], Custom: null };
+const S = {
+  spec: null, sel: null, tool: "select", pendingBus: null,
+  view: { tx: 0, ty: 0, k: 1 }, netView: "diagram", tableTab: "buses",
+  check: null, study: { ...DEFAULT_STUDY, ...store.get("study", {}) },
+  weather: null, results: null, running: false, dirty: true,
+};
+const U = 70; // px per diagram unit
+
+// ============================================================ spec helpers
+const COLL = { bus: "buses", line: "lines", trafo: "trafos", load: "loads", sgen: "sgens", ext: "ext_grids", switch: "switches", shunt: "shunts" };
+function ensureIds(spec) {
+  for (const k of ["buses", "lines", "trafos", "loads", "sgens", "ext_grids", "switches", "shunts"]) spec[k] = spec[k] || [];
+  spec.ext_grids.forEach((e, i) => (e.id ??= i));
+  spec.switches.forEach((e, i) => (e.id ??= i));
+  spec.shunts.forEach((e, i) => (e.id ??= i));
+  spec.loads.forEach((e, i) => (e.id ??= i));
+  spec.sgens.forEach((e, i) => (e.id ??= i));
+  spec.profiles = spec.profiles || clone(DEFAULT_PROFILES);
+  for (const [k, v] of Object.entries(DEFAULT_PROFILES)) if (!spec.profiles[k]) spec.profiles[k] = v.slice();
+  return spec;
+}
+const nextId = (arr) => arr.reduce((m, e) => Math.max(m, Number(e.id)), -1) + 1;
+const busById = (id) => S.spec.buses.find((b) => b.id === Number(id));
+const find = (kind, id) => (S.spec[COLL[kind]] || []).find((e) => e.id === Number(id));
+const busName = (id) => { const b = busById(id); return b ? b.name || `Bus ${b.id}` : `Bus ${id}`; };
+const elemKey = (type, id) => `${type}:${id}`;
+function lineSwitch(lineId) { return S.spec.switches.find((s) => Number(s.line) === Number(lineId)); }
+function elementList() {
+  return [...S.spec.lines.map((l) => ({ type: "line", id: l.id, name: l.name || `Line ${l.id}` })),
+          ...S.spec.trafos.map((t) => ({ type: "trafo", id: t.id, name: t.name || `Trafo ${t.id}` }))];
+}
+function candidates() {
+  const slack = new Set(S.spec.ext_grids.map((e) => Number(e.bus)));
+  return S.spec.buses.filter((b) => !slack.has(b.id));
+}
+function deleteSelected() {
+  const s = S.sel; if (!s) return;
+  const sp = S.spec;
+  if (s.kind === "bus") {
+    const id = s.id;
+    const lines = new Set(sp.lines.filter((l) => l.from_bus === id || l.to_bus === id).map((l) => l.id));
+    sp.buses = sp.buses.filter((b) => b.id !== id);
+    sp.lines = sp.lines.filter((l) => !lines.has(l.id));
+    sp.switches = sp.switches.filter((w) => !lines.has(Number(w.line)) && Number(w.bus) !== id);
+    sp.trafos = sp.trafos.filter((t) => t.hv_bus !== id && t.lv_bus !== id);
+    for (const k of ["loads", "sgens", "ext_grids", "shunts"]) sp[k] = sp[k].filter((e) => Number(e.bus) !== id);
+  } else if (s.kind === "line") {
+    sp.lines = sp.lines.filter((l) => l.id !== s.id);
+    sp.switches = sp.switches.filter((w) => Number(w.line) !== s.id);
+  } else {
+    const c = COLL[s.kind]; sp[c] = sp[c].filter((e) => e.id !== s.id);
+  }
+  S.sel = null; changed();
+}
+function autoLayout(spec) {
+  const need = spec.buses.some((b) => !isFinite(b.x) || !isFinite(b.y));
+  if (!need) return;
+  const adj = new Map(spec.buses.map((b) => [b.id, []]));
+  const open = new Set(spec.switches.filter((s) => !s.closed).map((s) => Number(s.line)));
+  for (const l of spec.lines) if (!open.has(l.id)) { adj.get(l.from_bus)?.push(l.to_bus); adj.get(l.to_bus)?.push(l.from_bus); }
+  for (const t of spec.trafos) { adj.get(t.hv_bus)?.push(t.lv_bus); adj.get(t.lv_bus)?.push(t.hv_bus); }
+  const roots = spec.ext_grids.map((e) => Number(e.bus)).filter((b) => adj.has(b));
+  if (!roots.length && spec.buses.length) roots.push(spec.buses[0].id);
+  const depth = new Map(), kids = new Map(), seen = new Set(roots);
+  roots.forEach((r) => depth.set(r, 0));
+  const q = [...roots];
+  while (q.length) {
+    const u = q.shift(); kids.set(u, []);
+    for (const v of adj.get(u) || []) if (!seen.has(v)) { seen.add(v); depth.set(v, depth.get(u) + 1); kids.get(u).push(v); q.push(v); }
+  }
+  let leaf = 0; const xs = new Map();
+  const place = (u) => { const k = kids.get(u) || []; if (!k.length) { xs.set(u, leaf++); return; } k.forEach(place); xs.set(u, (xs.get(k[0]) + xs.get(k[k.length - 1])) / 2); };
+  roots.forEach(place);
+  let extra = 0; const maxD = Math.max(0, ...depth.values()) + 2;
+  for (const b of spec.buses) {
+    if (xs.has(b.id)) { b.x = xs.get(b.id) * 1.6; b.y = depth.get(b.id) * 1.25; }
+    else { b.x = extra++ * 1.6; b.y = maxD * 1.25; }
+  }
+}
+
+// ============================================================ diagram renderer
+const ICON = {
+  select: '<path d="M5 3l12 8-6 1.5L8 19z" fill="currentColor"/>',
+  bus: '<path d="M3 12h18" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/><path d="M8 12v6M16 12v6" stroke="currentColor" stroke-width="1.5"/>',
+  line: '<circle cx="5" cy="18" r="2.2" fill="currentColor"/><circle cx="19" cy="6" r="2.2" fill="currentColor"/><path d="M5 18L19 6" stroke="currentColor" stroke-width="1.8"/>',
+  trafo: '<circle cx="12" cy="8.5" r="5" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="15.5" r="5" fill="none" stroke="currentColor" stroke-width="1.7"/>',
+  load: '<path d="M12 3v10" stroke="currentColor" stroke-width="1.8"/><path d="M6.5 12h11L12 20z" fill="currentColor"/>',
+  pv: '<rect x="4" y="6" width="16" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 12h16M9.3 6v12M14.6 6v12" stroke="currentColor" stroke-width="1.1"/>',
+  wind: '<path d="M12 11v10" stroke="currentColor" stroke-width="1.8"/><path d="M12 11l1-8M12 11l7 4M12 11l-7 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="11" r="1.6" fill="currentColor"/>',
+  ext: '<rect x="5" y="5" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M5 12L12 5M5 19L19 5M12 19l7-7" stroke="currentColor" stroke-width="1.2"/>',
+  del: '<path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>',
+};
+const TOOLS = [
+  ["select", "Select and move (Esc)"], "-", ["bus", "Add bus: click on the canvas"], ["line", "Add line: click two buses"],
+  ["trafo", "Add transformer: click HV bus, then LV bus"], "-", ["load", "Add load: click a bus"], ["pv", "Add PV: click a bus"],
+  ["wind", "Add wind turbine: click a bus"], ["ext", "Add external grid (slack): click a bus"], "-", ["del", "Delete the selected element (Del)"],
+];
+const HINTS = {
+  select: "Drag buses to move them. Scroll or pinch to zoom, drag the background to pan.",
+  bus: "Click on the canvas to place a bus.", line: "Click the first bus, then the second.",
+  trafo: "Click the high-voltage bus, then the low-voltage bus.", load: "Click a bus to add a load.",
+  pv: "Click a bus to add a PV plant.", wind: "Click a bus to add a wind turbine.", ext: "Click a bus to connect it to the external grid.",
+};
+function voltColor(kv) { return kv >= 60 ? cssVar("--hv") : kv >= 1 ? cssVar("--mv") : cssVar("--lv"); }
+
+/** Render a network into an <svg>. opts: {view, values: {"line:3": pct}, sel, battery:{bus,p}, readOnly, pending} */
+function renderSLD(svg, spec, opts) {
+  const { tx, ty, k } = opts.view;
+  const P = (b) => [tx + b.x * U * k, ty + b.y * U * k];
+  const vals = opts.values || {};
+  const ink2 = cssVar("--ink-2"), muted = cssVar("--muted"), bat = cssVar("--battery"), accent = cssVar("--accent");
+  const attach = new Map(spec.buses.map((b) => [b.id, []]));
+  for (const l of spec.loads) attach.get(Number(l.bus))?.push({ kind: "load", e: l });
+  for (const s of spec.sgens) attach.get(Number(s.bus))?.push({ kind: "sgen", e: s });
+  const out = [];
+  const isSel = (kind, id) => opts.sel && opts.sel.kind === kind && opts.sel.id === id;
+  const hasVals = Object.keys(vals).length > 0;
+  // branches
+  const drawBranch = (kind, e, a, b) => {
+    const A = busById(a), B = busById(b); if (!A || !B) return;
+    const [x1, y1] = P(A), [x2, y2] = P(B);
+    const key = elemKey(kind, e.id); const v = vals[key];
+    const sw = kind === "line" ? lineSwitch(e.id) : null;
+    const open = sw && !sw.closed;
+    const col = hasVals ? heat(v) : kind === "trafo" ? ink2 : voltColor(A.vn_kv);
+    const w = hasVals ? 3 : 2;
+    if (isSel(kind, e.id)) out.push(`<line class="sel" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke-width="12" stroke-linecap="round"/>`);
+    const dash = open ? ' stroke-dasharray="5 4"' : (e.kind === "overhead" ? "" : "");
+    out.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="${w}"${dash} stroke-opacity="${open ? 0.6 : 1}"/>`);
+    const L = Math.hypot(x2 - x1, y2 - y1) || 1, ux = (x2 - x1) / L, uy = (y2 - y1) / L;
+    if (open) {
+      const atFrom = Number(sw.bus) === Number(a);
+      const cx = atFrom ? x1 + ux * 18 : x2 - ux * 18, cy = atFrom ? y1 + uy * 18 : y2 - uy * 18;
+      out.push(`<circle cx="${cx}" cy="${cy}" r="4.5" fill="${cssVar("--panel")}" stroke="${ink2}" stroke-width="1.5"/>`);
+    }
+    if (e.kind === "overhead" && !open && L > 40) {
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      out.push(`<path d="M${mx - uy * 5 - ux * 4} ${my + ux * 5 - uy * 4}L${mx + uy * 5 + ux * 4} ${my - ux * 5 + uy * 4}" stroke="${col}" stroke-width="1.5"/>`);
+    }
+    if (kind === "trafo") {
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      out.push(`<circle cx="${mx - ux * 5}" cy="${my - uy * 5}" r="8" fill="${cssVar("--panel")}" stroke="${voltColor(A.vn_kv)}" stroke-width="1.8"/>`);
+      out.push(`<circle cx="${mx + ux * 5}" cy="${my + uy * 5}" r="8" fill="none" stroke="${voltColor(B.vn_kv)}" stroke-width="1.8"/>`);
+    }
+    if (hasVals && v != null && opts.labels !== false && L > 34) {
+      const mx = (x1 + x2) / 2 + (kind === "trafo" ? 14 : 6), my = (y1 + y2) / 2 + (kind === "trafo" ? 0 : -3);
+      out.push(`<text class="val" x="${mx}" y="${my}">${fmt(v, 0)}%</text>`);
+    }
+    if (!opts.readOnly || opts.pickable) out.push(`<line class="hit" data-k="${kind}:${e.id}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke-width="14"/>`);
+  };
+  for (const l of spec.lines) drawBranch("line", l, l.from_bus, l.to_bus);
+  for (const t of spec.trafos) drawBranch("trafo", t, t.hv_bus, t.lv_bus);
+  // buses + attachments
+  for (const b of spec.buses) {
+    const [x, y] = P(b); const att = attach.get(b.id) || [];
+    const sz = Math.min(1, Math.max(0.5, k * 1.1));
+    const hl = Math.max(20, 10 + att.length * 13) * sz;
+    const col = voltColor(b.vn_kv);
+    if (isSel("bus", b.id) || (opts.pending === b.id)) out.push(`<line class="sel" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16" stroke-linecap="round"/>`);
+    out.push(`<line class="busbar" x1="${x - hl}" y1="${y}" x2="${x + hl}" y2="${y}" stroke="${col}" stroke-width="5"/>`);
+    att.forEach((a, i) => {
+      const ox = x + (10 + i * 13) * sz, sel = isSel(a.kind, a.e.id);
+      const c = sel ? accent : ink2;
+      if (a.kind === "load") {
+        out.push(`<path d="M${ox} ${y + 2}v14" stroke="${c}" stroke-width="1.4"/><path d="M${ox - 4.5} ${y + 15}h9l-4.5 7z" fill="${c}"/>`);
+      } else if ((a.e.type || "").toUpperCase() === "WP") {
+        out.push(`<path d="M${ox} ${y + 2}v8" stroke="${c}" stroke-width="1.4"/><circle cx="${ox}" cy="${y + 17}" r="6.5" fill="${cssVar("--panel")}" stroke="${c}" stroke-width="1.4"/><path d="M${ox} ${y + 17}l0-5M${ox} ${y + 17}l4.3 2.5M${ox} ${y + 17}l-4.3 2.5" stroke="${c}" stroke-width="1.4"/>`);
+      } else {
+        out.push(`<path d="M${ox} ${y + 2}v8" stroke="${c}" stroke-width="1.4"/><rect x="${ox - 6}" y="${y + 10}" width="12" height="12" fill="${cssVar("--panel")}" stroke="${c}" stroke-width="1.4"/><path d="M${ox - 6} ${y + 22}L${ox + 6} ${y + 10}" stroke="${c}" stroke-width="1.1"/>`);
+      }
+      if (!opts.readOnly) out.push(`<rect class="hit" data-k="${a.kind}:${a.e.id}" x="${ox - 7}" y="${y + 2}" width="14" height="22"/>`);
+    });
+    for (const e of spec.ext_grids.filter((g) => Number(g.bus) === b.id)) {
+      const sel = isSel("ext", e.id), c = sel ? accent : ink2;
+      out.push(`<path d="M${x} ${y - 2}v-12" stroke="${c}" stroke-width="1.5"/><rect x="${x - 10}" y="${y - 34}" width="20" height="20" fill="${cssVar("--panel")}" stroke="${c}" stroke-width="1.5"/><path d="M${x - 10} ${y - 24}l10-10M${x - 10} ${y - 14}l20-20M${x} ${y - 14}l10-10" stroke="${c}" stroke-width="1"/>`);
+      if (!opts.readOnly) out.push(`<rect class="hit" data-k="ext:${e.id}" x="${x - 11}" y="${y - 35}" width="22" height="34"/>`);
+    }
+    if (opts.battery && Number(opts.battery.bus) === b.id) {
+      const bx = x + hl - 4, p = opts.battery.p;
+      out.push(`<path d="M${bx} ${y - 2}v-9" stroke="${bat}" stroke-width="1.6"/><rect x="${bx - 9}" y="${y - 25}" width="18" height="14" rx="2" fill="${bat}"/><path d="M${bx - 5} ${y - 18}h3M${bx + 2} ${y - 18}h3M${bx + 3.5} ${y - 19.5}v3" stroke="#fff" stroke-width="1.3"/>`);
+      if (p != null) out.push(`<text class="val" x="${bx + 12}" y="${y - 16}" style="fill:${bat}">${p > 0.005 ? "discharging" : p < -0.005 ? "charging" : "idle"} ${fmt(Math.abs(p), 2)} MW</text>`);
+    }
+    const lbl = esc(b.name || `Bus ${b.id}`);
+    out.push(`<text class="lbl" x="${x - hl - 6}" y="${y + 4}" text-anchor="end">${lbl}</text>`);
+    if (opts.showVm && opts.vm && opts.vm[b.id] != null) out.push(`<text class="lbl kv" x="${x - hl - 6}" y="${y + 16}" text-anchor="end">${fmt(opts.vm[b.id], 3)} pu</text>`);
+    else if (k > 0.75 && !opts.readOnly) out.push(`<text class="lbl kv" x="${x - hl - 6}" y="${y + 16}" text-anchor="end">${fmt(b.vn_kv, b.vn_kv < 1 ? 2 : 0)} kV</text>`);
+    out.push(`<line class="hit" data-k="bus:${b.id}" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16"/>`);
+  }
+  svg.innerHTML = out.join("");
+}
+function fitView(svg, spec, pad = 70) {
+  const r = svg.getBoundingClientRect(); const W = r.width || 800, H = r.height || 560;
+  if (!spec.buses.length) return { tx: W / 2, ty: H / 2, k: 1 };
+  const xs = spec.buses.map((b) => b.x * U), ys = spec.buses.map((b) => b.y * U);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const k = Math.min(2.2, Math.max(0.2, Math.min((W - 2 * pad - 60) / Math.max(x1 - x0, 1), (H - 2 * pad) / Math.max(y1 - y0, 1))));
+  return { k, tx: (W - (x1 + x0) * k) / 2 + 20, ty: (H - (y1 + y0) * k) / 2 + 6 };
+}
+
+// ============================================================ network editor
+function drawEditor() {
+  const svg = $("#sld");
+  const values = {};
+  if (S.check && S.check.ok && !S.dirtyCheck) elementList().forEach((e, i) => (values[elemKey(e.type, e.id)] = S.check.loading[i]));
+  renderSLD(svg, S.spec, { view: S.view, sel: S.sel, values, pending: S.pendingBus, battery: { bus: S.study.bus } });
+  const leg = $("#legend");
+  const kvs = [...new Set(S.spec.buses.map((b) => b.vn_kv))].sort((a, b) => b - a);
+  leg.innerHTML = "";
+  if (Object.keys(values).length) {
+    leg.append(h("span", {}, "Loading at rated power"), h("span", { class: "heatbar", style: { background: heatGradient() } }), h("span", { class: "mono" }, "0 → 100 %"));
+  } else {
+    for (const kv of kvs) { const s = h("span", {}); const sw = h("span", { class: "sw" }); sw.style.background = voltColor(kv); s.append(sw, `${fmt(kv, kv < 1 ? 2 : 0)} kV`); leg.append(s); }
+  }
+  const bat = h("span", {}); const bsw = h("span", { class: "sw" }); bsw.style.background = cssVar("--battery"); bat.append(bsw, "Battery"); leg.append(bat);
+  const op = h("span", {}, "Dashed line with ring: normally open switch"); leg.append(op);
+  $("#canvas-wrap").className = "canvas-wrap" + (S.tool === "bus" ? " tool-bus" : S.tool !== "select" ? " tool-pick" : "");
+  $("#hint").textContent = S.pendingBus != null ? `From ${busName(S.pendingBus)}: now click the second bus (Esc cancels).` : HINTS[S.tool] || "";
+}
+function buildToolbar() {
+  const tb = $("#toolbar"); tb.innerHTML = "";
+  for (const t of TOOLS) {
+    if (t === "-") { tb.append(h("hr")); continue; }
+    const [id, title] = t;
+    const b = h("button", { class: "tool", title, "aria-label": title, "aria-pressed": id === S.tool ? "true" : "false" });
+    b.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[id]}</svg>`;
+    b.onclick = () => { if (id === "del") { deleteSelected(); return; } setTool(id); };
+    tb.append(b);
+  }
+}
+function setTool(t) { S.tool = t; S.pendingBus = null; buildToolbar(); drawEditor(); }
+
+function screenToWorld(px, py) { return [(px - S.view.tx) / (U * S.view.k), (py - S.view.ty) / (U * S.view.k)]; }
+function addAtBus(kind, busId) {
+  const sp = S.spec; const b = busById(busId);
+  if (kind === "load") { const e = { id: nextId(sp.loads), name: `Load ${b.name || b.id}`, bus: b.id, p_mw: 0.5, q_mvar: 0.12, profile: "residential" }; sp.loads.push(e); S.sel = { kind: "load", id: e.id }; }
+  if (kind === "pv") { const e = { id: nextId(sp.sgens), name: `PV ${b.name || b.id}`, bus: b.id, p_mw: 0.5, q_mvar: 0, type: "PV" }; sp.sgens.push(e); S.sel = { kind: "sgen", id: e.id }; }
+  if (kind === "wind") { const e = { id: nextId(sp.sgens), name: `Wind ${b.name || b.id}`, bus: b.id, p_mw: 2, q_mvar: 0, type: "WP" }; sp.sgens.push(e); S.sel = { kind: "sgen", id: e.id }; }
+  if (kind === "ext") {
+    if (sp.ext_grids.some((e) => Number(e.bus) === b.id)) { toast("This bus already has an external grid."); return; }
+    const e = { id: nextId(sp.ext_grids), bus: b.id, vm_pu: 1.02, va_degree: 0 }; sp.ext_grids.push(e); S.sel = { kind: "ext", id: e.id };
+  }
+  changed();
+}
+function addBranch(kind, a, b) {
+  const sp = S.spec; const A = busById(a), B = busById(b);
+  if (a === b) { toast("Pick two different buses."); return; }
+  if (kind === "line") {
+    if (Math.abs(A.vn_kv - B.vn_kv) > 1e-6) { toast("These buses have different voltages. Use a transformer between them."); return; }
+    const mv = A.vn_kv >= 1;
+    const e = { id: nextId(sp.lines), name: `Line ${A.name || a}–${B.name || b}`, from_bus: a, to_bus: b, length_km: 1.0,
+      r_ohm_per_km: mv ? 0.501 : 0.206, x_ohm_per_km: mv ? 0.716 : 0.080, c_nf_per_km: mv ? 151.2 : 210, max_i_ka: mv ? 0.283 : 0.27, parallel: 1, df: 1, kind: "cable" };
+    sp.lines.push(e); S.sel = { kind: "line", id: e.id };
+  } else {
+    const [hv, lv] = A.vn_kv >= B.vn_kv ? [A, B] : [B, A];
+    const sn = hv.vn_kv >= 60 ? 25 : 0.63;
+    const e = { id: nextId(sp.trafos), name: `Trafo ${hv.name || hv.id}–${lv.name || lv.id}`, hv_bus: hv.id, lv_bus: lv.id, sn_mva: sn,
+      vn_hv_kv: hv.vn_kv, vn_lv_kv: lv.vn_kv, vk_percent: hv.vn_kv >= 60 ? 12.0 : 6.0, vkr_percent: hv.vn_kv >= 60 ? 0.41 : 1.2,
+      pfe_kw: 0, i0_percent: 0, shift_degree: 30, tap_side: "lv", tap_pos: 0, tap_neutral: 0, tap_step_percent: 1.5, parallel: 1, df: 1 };
+    sp.trafos.push(e); S.sel = { kind: "trafo", id: e.id };
+  }
+  changed();
+}
+function hookCanvas() {
+  const svg = $("#sld"); const wrap = $("#canvas-wrap");
+  let drag = null; const pointers = new Map(); let pinch = null;
+  const local = (ev) => { const r = svg.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; };
+  svg.addEventListener("pointerdown", (ev) => {
+    svg.setPointerCapture(ev.pointerId); pointers.set(ev.pointerId, local(ev));
+    if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), k: S.view.k, tx: S.view.tx, ty: S.view.ty, c: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; drag = null; return; }
+    const [px, py] = local(ev); const t = ev.target.closest("[data-k]"); const key = t && t.getAttribute("data-k");
+    const [kind, idS] = key ? key.split(":") : [null, null]; const id = idS != null ? Number(idS) : null;
+    if (S.tool === "select") {
+      if (kind) {
+        S.sel = { kind, id };
+        if (kind === "bus") { const b = busById(id); drag = { mode: "bus", b, ox: b.x, oy: b.y, sx: px, sy: py, moved: false }; }
+        else drag = null;
+        renderInspector(); drawEditor();
+      } else { drag = { mode: "pan", sx: px, sy: py, tx: S.view.tx, ty: S.view.ty, moved: false }; }
+      return;
+    }
+    if (S.tool === "bus") {
+      if (kind === "bus") { S.sel = { kind, id }; renderInspector(); drawEditor(); return; }
+      const [wx, wy] = screenToWorld(px, py);
+      const last = S.spec.buses.length ? (busById(S.sel?.kind === "bus" ? S.sel.id : S.spec.buses[S.spec.buses.length - 1].id) || {}).vn_kv : 20;
+      const b = { id: nextId(S.spec.buses), name: `Bus ${nextId(S.spec.buses)}`, vn_kv: last || 20, x: Math.round(wx * 4) / 4, y: Math.round(wy * 4) / 4 };
+      S.spec.buses.push(b); S.sel = { kind: "bus", id: b.id }; changed(); return;
+    }
+    if (kind !== "bus") { drag = { mode: "pan", sx: px, sy: py, tx: S.view.tx, ty: S.view.ty, moved: false }; return; }
+    if (S.tool === "line" || S.tool === "trafo") {
+      if (S.pendingBus == null) { S.pendingBus = id; drawEditor(); }
+      else { const a = S.pendingBus; S.pendingBus = null; addBranch(S.tool, a, id); }
+      return;
+    }
+    addAtBus(S.tool, id);
+  });
+  svg.addEventListener("pointermove", (ev) => {
+    if (!pointers.has(ev.pointerId)) return;
+    pointers.set(ev.pointerId, local(ev));
+    if (pinch && pointers.size === 2) {
+      const [a, b] = [...pointers.values()]; const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+      const k = Math.min(4, Math.max(0.15, pinch.k * d / pinch.d)); const f = k / pinch.k;
+      S.view = { k, tx: pinch.c[0] - (pinch.c[0] - pinch.tx) * f, ty: pinch.c[1] - (pinch.c[1] - pinch.ty) * f }; drawEditor(); return;
+    }
+    if (!drag) return;
+    const [px, py] = local(ev);
+    if (Math.abs(px - drag.sx) + Math.abs(py - drag.sy) > 3) drag.moved = true;
+    if (drag.mode === "pan") { S.view.tx = drag.tx + px - drag.sx; S.view.ty = drag.ty + py - drag.sy; drawEditor(); }
+    if (drag.mode === "bus" && drag.moved) {
+      const dx = (px - drag.sx) / (U * S.view.k), dy = (py - drag.sy) / (U * S.view.k);
+      drag.b.x = Math.round((drag.ox + dx) * 8) / 8; drag.b.y = Math.round((drag.oy + dy) * 8) / 8; drawEditor();
+    }
+  });
+  const end = (ev) => {
+    pointers.delete(ev.pointerId); if (pointers.size < 2) pinch = null;
+    if (drag && drag.mode === "pan" && !drag.moved && S.tool === "select") { S.sel = null; renderInspector(); drawEditor(); }
+    if (drag && drag.mode === "bus" && drag.moved) saveSpec();
+    drag = null;
+  };
+  svg.addEventListener("pointerup", end); svg.addEventListener("pointercancel", end);
+  svg.addEventListener("wheel", (ev) => {
+    ev.preventDefault(); const [px, py] = local(ev);
+    zoomAt(px, py, Math.exp(-ev.deltaY * 0.0015));
+  }, { passive: false });
+  $("#z-in").onclick = () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.25); };
+  $("#z-out").onclick = () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 0.8); };
+  $("#z-fit").onclick = () => { S.view = fitView(svg, S.spec); drawEditor(); };
+  new ResizeObserver(() => {
+    if (S.netView !== "diagram" || $("#view-network").hidden) return;
+    const w = wrap.clientWidth;
+    if (!S.fitW || Math.abs(w - S.fitW) > 0.2 * S.fitW) { S.view = fitView(svg, S.spec); S.fitW = w; }
+    drawEditor();
+  }).observe(wrap);
+  document.addEventListener("keydown", (ev) => {
+    if (ev.target.closest("input, select, textarea")) return;
+    if ($("#view-network").hidden) return;
+    if (ev.key === "Escape") { if (S.pendingBus != null) { S.pendingBus = null; drawEditor(); } else setTool("select"); }
+    if ((ev.key === "Delete" || ev.key === "Backspace") && S.sel) { ev.preventDefault(); deleteSelected(); }
+  });
+}
+function zoomAt(px, py, f) {
+  const k = Math.min(4, Math.max(0.15, S.view.k * f)); const g = k / S.view.k;
+  S.view = { k, tx: px - (px - S.view.tx) * g, ty: py - (py - S.view.ty) * g }; drawEditor();
+}
+
+// ============================================================ inspector & tables (field descriptors)
+const PROFILE_OPTS = () => Object.keys(S.spec.profiles || {});
+const BUS_OPTS = () => S.spec.buses.map((b) => [b.id, `${b.name || "Bus " + b.id} (${fmt(b.vn_kv, b.vn_kv < 1 ? 2 : 0)} kV)`]);
+const FIELDS = {
+  bus: [["name", "Name", "text"], ["vn_kv", "Rated voltage", "num", "kV"]],
+  line: [["name", "Name", "text"], ["from_bus", "From bus", "bus"], ["to_bus", "To bus", "bus"], ["length_km", "Length", "num", "km"],
+    ["r_ohm_per_km", "Resistance R′", "num", "Ω/km"], ["x_ohm_per_km", "Reactance X′", "num", "Ω/km"], ["c_nf_per_km", "Capacitance C′", "num", "nF/km"],
+    ["max_i_ka", "Thermal rating", "num", "kA"], ["parallel", "Parallel systems", "num"], ["kind", "Type", "sel", null, [["cable", "Cable"], ["overhead", "Overhead line"]]]],
+  trafo: [["name", "Name", "text"], ["hv_bus", "HV bus", "bus"], ["lv_bus", "LV bus", "bus"], ["sn_mva", "Rated power", "num", "MVA"],
+    ["vn_hv_kv", "Rated voltage HV", "num", "kV"], ["vn_lv_kv", "Rated voltage LV", "num", "kV"], ["vk_percent", "Short-circuit voltage uk", "num", "%"],
+    ["vkr_percent", "Resistive part ur", "num", "%"], ["pfe_kw", "Iron losses", "num", "kW"], ["i0_percent", "No-load current", "num", "%"],
+    ["shift_degree", "Phase shift", "num", "°"], ["tap_side", "Tap changer side", "sel", null, [["", "None"], ["hv", "HV"], ["lv", "LV"]]],
+    ["tap_pos", "Tap position", "num"], ["tap_step_percent", "Tap step", "num", "%"], ["parallel", "Parallel units", "num"]],
+  load: [["name", "Name", "text"], ["bus", "Bus", "bus"], ["p_mw", "Active power", "num", "MW"], ["q_mvar", "Reactive power", "num", "Mvar"], ["profile", "Daily profile", "prof"]],
+  sgen: [["name", "Name", "text"], ["bus", "Bus", "bus"], ["p_mw", "Installed power", "num", "MW"], ["type", "Technology", "sel", null, [["PV", "PV (follows irradiance)"], ["WP", "Wind (follows wind speed)"]]], ["q_mvar", "Reactive power at full output", "num", "Mvar"]],
+  ext: [["bus", "Bus", "bus"], ["vm_pu", "Voltage setpoint", "num", "pu"], ["va_degree", "Voltage angle", "num", "°"]],
+  shunt: [["bus", "Bus", "bus"], ["q_mvar", "Reactive power (+ absorbs)", "num", "Mvar"], ["p_mw", "Active power", "num", "MW"], ["step", "Steps", "num"]],
+  switch: [["name", "Name", "text"], ["line", "Line", "line"], ["bus", "At bus", "bus"], ["closed", "State", "sel", null, [["false", "Open"], ["true", "Closed"]]]],
+};
+const KIND_LABEL = { bus: "Bus", line: "Line", trafo: "Transformer", load: "Load", sgen: "Generation", ext: "External grid", shunt: "Shunt", switch: "Switch" };
+function fieldInput(kind, e, f, cls) {
+  const [key, , type, , opts] = f; let el;
+  const onChange = (v) => {
+    if (type === "num" || type === "bus" || type === "line") { const n = Number(v); if (!isFinite(n)) return; e[key] = n; }
+    else if (key === "closed") e[key] = v === "true";
+    else if (key === "tap_side") e[key] = v || null;
+    else e[key] = v;
+    changed({ keepInspector: true });
+  };
+  if (type === "text") el = h("input", { class: cls, type: "text", value: e[key] ?? "" });
+  else if (type === "num") el = h("input", { class: cls, type: "number", step: "any", value: e[key] ?? 0 });
+  else {
+    const list = type === "bus" ? BUS_OPTS() : type === "prof" ? PROFILE_OPTS().map((p) => [p, p]) : type === "line" ? S.spec.lines.map((l) => [l.id, l.name || `Line ${l.id}`]) : opts;
+    el = h("select", { class: cls });
+    const cur = key === "closed" ? String(!!e[key]) : String(e[key] ?? "");
+    for (const [v, t] of list) el.append(h("option", { value: v, selected: String(v) === cur ? true : null }, t));
+  }
+  el.addEventListener("change", () => onChange(el.value));
+  return el;
+}
+function renderInspector() {
+  const box = $("#inspector"); box.innerHTML = "";
+  const s = S.sel; const e = s && find(s.kind, s.id);
+  if (!s || !e) {
+    const sp = S.spec;
+    box.append(h("div", { class: "head" }, h("div", {}, h("span", { class: "eyebrow" }, "Network"), h("h3", { text: sp.name || "Untitled network" }))));
+    const name = h("input", { type: "text", value: sp.name || "" }); name.onchange = () => { sp.name = name.value; changed({ keepInspector: true }); };
+    box.append(h("label", { class: "f" }, "Network name", name));
+    const dl = h("dl", { class: "kv" });
+    const tl = sp.loads.reduce((a, l) => a + Number(l.p_mw || 0), 0), pv = sp.sgens.filter((g) => g.type !== "WP").reduce((a, g) => a + Number(g.p_mw), 0), wp = sp.sgens.filter((g) => g.type === "WP").reduce((a, g) => a + Number(g.p_mw), 0);
+    for (const [k, v] of [["Buses", sp.buses.length], ["Lines", sp.lines.length], ["Transformers", sp.trafos.length], ["Rated load", fmt(tl, 2) + " MW"], ["PV", fmt(pv, 2) + " MW"], ["Wind", fmt(wp, 2) + " MW"]]) dl.append(h("dt", {}, k), h("dd", {}, String(v)));
+    box.append(dl);
+    if (S.check) {
+      if (S.check.ok) {
+        const c = h("dl", { class: "kv" });
+        c.append(h("dt", {}, "Highest loading"), h("dd", {}, fmt(S.check.max_loading, 1) + " %"), h("dt", {}, "Voltage range"), h("dd", {}, `${fmt(S.check.vm_min, 3)}–${fmt(S.check.vm_max, 3)} pu`));
+        box.append(h("div", {}, h("span", { class: "eyebrow" }, S.dirtyCheck ? "Last check (network changed since)" : "Check at rated power, no battery"), c));
+      } else box.append(h("div", { class: "note err", text: S.check.error }));
+    }
+    box.append(h("p", { class: "muted", style: { fontSize: "12px", margin: 0 } }, "Select an element to edit it. Use the tools on the left to draw, or switch to Tables to edit everything at once."));
+    return;
+  }
+  const head = h("div", { class: "head" }, h("div", { style: { minWidth: 0, flex: 1 } }, h("span", { class: "eyebrow" }, KIND_LABEL[s.kind]), h("h3", { text: e.name || (s.kind === "ext" ? `External grid at ${busName(e.bus)}` : `${KIND_LABEL[s.kind]} ${e.id}`) })));
+  const del = h("button", { class: "btn ghost danger", title: "Delete", "aria-label": "Delete" }); del.innerHTML = `<svg viewBox="0 0 24 24">${ICON.del}</svg>`; del.onclick = deleteSelected;
+  head.append(del); box.append(head);
+  const grid = h("div", { class: "grid2" });
+  for (const f of FIELDS[s.kind]) {
+    const lab = h("label", { class: "f", style: f[2] === "text" || f[2] === "bus" || f[2] === "prof" || f[2] === "sel" ? { gridColumn: "1 / -1" } : null }, h("span", {}, f[1], f[3] ? h("span", { class: "u" }, " " + f[3]) : null), fieldInput(s.kind, e, f));
+    grid.append(lab);
+  }
+  box.append(grid);
+  if (s.kind === "line") {
+    const sw = lineSwitch(e.id);
+    const sel = h("select", {});
+    const cur = sw && !sw.closed ? String(sw.bus) : "closed";
+    sel.append(h("option", { value: "closed", selected: cur === "closed" ? true : null }, "Closed (in operation)"));
+    for (const b of [e.from_bus, e.to_bus]) sel.append(h("option", { value: String(b), selected: cur === String(b) ? true : null }, `Normally open at ${busName(b)}`));
+    sel.onchange = () => {
+      S.spec.switches = S.spec.switches.filter((w) => Number(w.line) !== e.id);
+      if (sel.value !== "closed") S.spec.switches.push({ id: nextId(S.spec.switches), name: sw?.name || `S${e.id}`, bus: Number(sel.value), line: e.id, closed: false });
+      changed({ keepInspector: true });
+    };
+    box.append(h("label", { class: "f" }, "Switch", sel));
+  }
+  if (s.kind === "bus") {
+    const att = h("div", { class: "attached" });
+    const items = [
+      ...S.spec.loads.filter((l) => Number(l.bus) === e.id).map((l) => ["load", l, `${l.name || "Load"} · ${fmt(l.p_mw, 2)} MW ${l.profile}`]),
+      ...S.spec.sgens.filter((g) => Number(g.bus) === e.id).map((g) => ["sgen", g, `${g.name || "Generator"} · ${fmt(g.p_mw, 2)} MW ${g.type}`]),
+      ...S.spec.ext_grids.filter((g) => Number(g.bus) === e.id).map((g) => ["ext", g, `External grid · ${fmt(g.vm_pu, 3)} pu`]),
+    ];
+    for (const [k, it, txt] of items) att.append(h("button", { onclick: () => { S.sel = { kind: k, id: it.id }; renderInspector(); drawEditor(); } }, txt));
+    if (items.length) box.append(h("div", {}, h("span", { class: "eyebrow" }, "Connected here"), att));
+    const isSlack = S.spec.ext_grids.some((g) => Number(g.bus) === e.id);
+    const pb = h("button", { class: "btn", disabled: isSlack ? true : null, onclick: () => { S.study.bus = e.id; saveStudy(); syncStudyForm(); drawEditor(); toast(`The battery is now planned at ${busName(e.id)}.`); } },
+      Number(S.study.bus) === e.id ? "Battery is placed here" : "Place the battery here");
+    box.append(pb);
+    if (isSlack) box.append(h("p", { class: "muted", style: { fontSize: "12px", margin: 0 } }, "A battery on the slack bus has no effect on the network, so it cannot be placed here."));
+  }
+  if (S.check && S.check.ok && !S.dirtyCheck && (s.kind === "line" || s.kind === "trafo")) {
+    const i = elementList().findIndex((x) => x.type === s.kind && x.id === e.id);
+    if (i >= 0) box.append(h("div", { class: "note" }, `Loading at rated power: ${fmt(S.check.loading[i], 1)} %`));
+  }
+}
+
+const TABLES = [["buses", "Buses", "bus"], ["lines", "Lines", "line"], ["trafos", "Transformers", "trafo"], ["loads", "Loads", "load"],
+  ["sgens", "Generation", "sgen"], ["ext_grids", "External grid", "ext"], ["switches", "Switches", "switch"], ["shunts", "Shunts", "shunt"]];
+function renderTables() {
+  const root = $("#tables"); root.innerHTML = "";
+  const tabs = h("div", { class: "subtabs" });
+  for (const [c, label] of TABLES) tabs.append(h("button", { "aria-pressed": S.tableTab === c ? "true" : "false", onclick: () => { S.tableTab = c; renderTables(); } }, `${label} `, h("span", { class: "muted" }, String(S.spec[c].length))));
+  const [coll, label, kind] = TABLES.find((t) => t[0] === S.tableTab);
+  const add = h("button", { class: "btn", onclick: () => addRow(kind) }, `Add ${KIND_LABEL[kind].toLowerCase()}`);
+  root.append(h("div", { class: "row", style: { marginBottom: "10px" } }, tabs, h("span", { class: "spacer" }), add));
+  const fields = FIELDS[kind];
+  const tbl = h("table", { class: "t" });
+  const hr = h("tr", {}, h("th", {}, "Id"), ...fields.map((f) => h("th", {}, f[1] + (f[3] ? ` [${f[3]}]` : ""))), h("th", {}, ""));
+  tbl.append(h("thead", {}, hr));
+  const tb = h("tbody");
+  for (const e of S.spec[coll]) {
+    const tr = h("tr", { class: S.sel && S.sel.kind === kind && S.sel.id === e.id ? "sel" : null });
+    tr.append(h("td", { class: "n" }, String(e.id)));
+    for (const f of fields) tr.append(h("td", {}, fieldInput(kind, e, f, "cell")));
+    const del = h("button", { class: "btn ghost danger", "aria-label": "Delete row" }); del.innerHTML = `<svg viewBox="0 0 24 24">${ICON.del}</svg>`;
+    del.onclick = () => { S.sel = { kind, id: e.id }; deleteSelected(); };
+    tr.append(h("td", {}, del)); tb.append(tr);
+  }
+  tbl.append(tb);
+  root.append(h("div", { class: "tblwrap" }, tbl));
+  if (kind === "switch") root.append(h("p", { class: "muted", style: { fontSize: "12px" } }, "Only open switches matter: an open switch disconnects that end of the line, like a normally open point between feeders."));
+}
+function addRow(kind) {
+  const sp = S.spec; const b0 = sp.buses[0]?.id ?? 0; const b1 = sp.buses[1]?.id ?? b0;
+  const tpl = {
+    bus: () => ({ id: nextId(sp.buses), name: `Bus ${nextId(sp.buses)}`, vn_kv: 20, x: 0, y: (Math.max(0, ...sp.buses.map((b) => b.y || 0)) + 1.25) }),
+    line: () => ({ id: nextId(sp.lines), name: `Line ${nextId(sp.lines)}`, from_bus: b0, to_bus: b1, length_km: 1, r_ohm_per_km: 0.501, x_ohm_per_km: 0.716, c_nf_per_km: 151.2, max_i_ka: 0.283, parallel: 1, df: 1, kind: "cable" }),
+    trafo: () => ({ id: nextId(sp.trafos), name: `Trafo ${nextId(sp.trafos)}`, hv_bus: b0, lv_bus: b1, sn_mva: 25, vn_hv_kv: 110, vn_lv_kv: 20, vk_percent: 12, vkr_percent: 0.41, pfe_kw: 0, i0_percent: 0, shift_degree: 30, tap_side: "lv", tap_pos: 0, tap_neutral: 0, tap_step_percent: 1.5, parallel: 1, df: 1 }),
+    load: () => ({ id: nextId(sp.loads), name: `Load ${nextId(sp.loads)}`, bus: b1, p_mw: 0.5, q_mvar: 0.12, profile: "residential" }),
+    sgen: () => ({ id: nextId(sp.sgens), name: `PV ${nextId(sp.sgens)}`, bus: b1, p_mw: 0.5, q_mvar: 0, type: "PV" }),
+    ext: () => ({ id: nextId(sp.ext_grids), bus: b0, vm_pu: 1.0, va_degree: 0 }),
+    switch: () => ({ id: nextId(sp.switches), name: `S${nextId(sp.switches)}`, line: sp.lines[0]?.id ?? 0, bus: sp.lines[0]?.from_bus ?? b0, closed: false }),
+    shunt: () => ({ id: nextId(sp.shunts), bus: b1, q_mvar: 0.5, p_mw: 0, step: 1 }),
+  }[kind]();
+  sp[COLL[kind]].push(tpl); S.sel = { kind, id: tpl.id }; changed();
+}
+
+// ============================================================ network lifecycle
+let saveT = null;
+function saveSpec() { clearTimeout(saveT); saveT = setTimeout(() => store.set("spec", S.spec), 300); }
+function changed(o = {}) {
+  S.dirtyCheck = true; S.dirty = true; saveSpec(); updateNetHeader();
+  if (S.netView === "tables") renderTables(); else drawEditor();
+  renderInspector(); syncStudyForm();
+}
+function loadSpec(spec, { fit = true, msg } = {}) {
+  S.spec = ensureIds(spec); autoLayout(S.spec); S.sel = null; S.check = null; S.dirtyCheck = false; S.dirty = true;
+  if (!busById(S.study.bus) || S.spec.ext_grids.some((g) => Number(g.bus) === Number(S.study.bus))) { const c = candidates(); S.study.bus = c.length ? c[Math.min(7, c.length - 1)].id : null; }
+  saveSpec(); updateNetHeader(); renderInspector(); syncStudyForm();
+  if (S.netView === "tables") renderTables();
+  requestAnimationFrame(() => { if (fit) { S.view = fitView($("#sld"), S.spec); S.fitW = $("#canvas-wrap").clientWidth; } drawEditor(); });
+  showNetMsg(msg ? msg[0] : null, msg ? msg[1] : null);
+  if (engine && engine.ready) checkNetwork(true);
+}
+function updateNetHeader() {
+  $("#netname").textContent = S.spec.name || "Untitled network";
+  $("#netstats").textContent = `${S.spec.buses.length} buses · ${S.spec.lines.length} lines · ${S.spec.trafos.length} transformers`;
+}
+function showNetMsg(kind, text) {
+  const m = $("#net-msg"); m.innerHTML = "";
+  if (!text) return;
+  if (Array.isArray(text)) { const ul = h("ul", { style: { margin: "4px 0 0", paddingLeft: "18px" } }, text.map((t) => h("li", {}, t))); m.append(h("div", { class: "note " + (kind || "") }, h("b", {}, "Imported with notes:"), ul)); }
+  else m.append(h("div", { class: "note " + (kind || "") }, text));
+}
+async function checkNetwork(silent) {
+  if (!engine || !engine.ready) { toast("The engine is still starting."); return; }
+  try {
+    const r = await engine.json("validate", [JSON.stringify(S.spec)]);
+    S.check = r; S.dirtyCheck = false;
+    if (!r.ok) showNetMsg("err", r.error); else if (!silent) showNetMsg("", `The load flow converges. Highest loading at rated power, without battery: ${fmt(r.max_loading, 1)} %. Voltages ${fmt(r.vm_min, 3)}–${fmt(r.vm_max, 3)} pu.`);
+    else if (!$("#net-msg .note.warn")) showNetMsg(null, null);
+  } catch (e) { S.check = { ok: false, error: e.message }; showNetMsg("err", e.message); }
+  drawEditor(); renderInspector();
+}
+async function importFile(file) {
+  const text = await file.text();
+  let data; try { data = JSON.parse(text); } catch { showNetMsg("err", "This file is not valid JSON."); return; }
+  if (data && Array.isArray(data.buses)) { loadSpec(data); toast("Network loaded."); return; }
+  if (!engine.ready) { showNetMsg("err", "The engine is still starting. Try again in a moment."); return; }
+  try {
+    const r = await engine.json("import_pp", [text]);
+    if (!r.spec.name || r.spec.name === "Imported pandapower network") r.spec.name = file.name.replace(/\.json$/i, "");
+    loadSpec(r.spec, { msg: r.warnings.length ? ["warn", r.warnings] : null });
+    toast("pandapower network imported.");
+  } catch (e) { showNetMsg("err", e.message); }
+}
+
+// ============================================================ study form
+const DEFAULT_PROFILES = {
+  residential: [0.26, 0.20, 0.19, 0.19, 0.19, 0.23, 0.40, 0.55, 0.62, 0.63, 0.67, 0.60, 0.72, 0.60, 0.52, 0.49, 0.48, 0.60, 0.80, 0.90, 0.80, 0.68, 0.52, 0.38],
+  commercial: [0.36, 0.34, 0.29, 0.34, 0.38, 0.47, 0.70, 0.89, 0.99, 0.97, 1.00, 0.80, 0.82, 0.86, 0.87, 0.88, 0.80, 0.55, 0.49, 0.47, 0.42, 0.39, 0.34, 0.33],
+  flat: Array(24).fill(1),
+};
+function saveStudy() { store.set("study", S.study); }
+function bindNum(id, key, scale = 1) {
+  const el = $(id); el.value = S.study[key] * scale;
+  el.onchange = () => { const v = Number(el.value); if (isFinite(v)) { S.study[key] = v / scale; saveStudy(); S.dirty = true; updateEstimate(); onPeriodChange(key); } };
+}
+function onPeriodChange(key) { if (["lat", "lon", "start", "days"].includes(key)) renderWeatherStatus(); }
+function syncStudyForm() {
+  if (!S.spec) return;
+  const bs = $("#b-bus"); bs.innerHTML = "";
+  for (const b of candidates()) bs.append(h("option", { value: b.id, selected: Number(S.study.bus) === b.id ? true : null }, b.name || `Bus ${b.id}`));
+  bs.onchange = () => { S.study.bus = Number(bs.value); saveStudy(); drawEditor(); };
+  renderProfiles(); updateEstimate();
+}
+function initStudyForm() {
+  const pl = $("#w-place");
+  for (const p of Object.keys(PLACES)) pl.append(h("option", { value: p, selected: S.study.place === p ? true : null }, p));
+  pl.onchange = () => { S.study.place = pl.value; const c = PLACES[pl.value]; if (c) { S.study.lat = c[0]; S.study.lon = c[1]; $("#w-lat").value = c[0]; $("#w-lon").value = c[1]; } saveStudy(); renderWeatherStatus(); };
+  bindNum("#w-lat", "lat"); bindNum("#w-lon", "lon"); bindNum("#w-days", "days");
+  $("#w-lat").addEventListener("change", () => { S.study.place = "Custom"; pl.value = "Custom"; saveStudy(); });
+  $("#w-lon").addEventListener("change", () => { S.study.place = "Custom"; pl.value = "Custom"; saveStudy(); });
+  const st = $("#w-start"); st.value = S.study.start; st.onchange = () => { S.study.start = st.value; saveStudy(); renderWeatherStatus(); updateEstimate(); };
+  $("#w-quick").onchange = (ev) => { const d = Number(ev.target.value); if (!d) return; S.study.days = d; $("#w-days").value = d; if (d >= 365) { S.study.start = S.study.start.slice(0, 4) + "-01-01"; st.value = S.study.start; } ev.target.value = ""; saveStudy(); renderWeatherStatus(); updateEstimate(); };
+  bindNum("#b-mw", "mw"); bindNum("#b-mwh", "mwh"); bindNum("#b-etac", "eta_c"); bindNum("#b-etad", "eta_d"); bindNum("#b-soc", "soc");
+  bindNum("#o-wl", "wl"); bindNum("#o-wt", "wt"); bindNum("#m-probe", "probe"); bindNum("#m-levels", "levels");
+  for (const r of $$('input[name="obj"]')) { r.checked = r.value === S.study.objective; r.onchange = () => { S.study.objective = r.value; saveStudy(); $("#weights").hidden = r.value !== "quadratic_peak"; }; }
+  $("#weights").hidden = S.study.objective !== "quadratic_peak";
+  for (const r of $$('input[name="model"]')) { r.checked = r.value === S.study.model; r.onchange = () => { S.study.model = r.value; saveStudy(); updateEstimate(); }; }
+  const setMode = (m) => { S.study.mode = m; saveStudy(); $("#r-one").setAttribute("aria-pressed", m === "one"); $("#r-all").setAttribute("aria-pressed", m === "all"); updateEstimate(); };
+  $("#r-one").onclick = () => setMode("one"); $("#r-all").onclick = () => setMode("all"); setMode(S.study.mode);
+  $("#w-fetch").onclick = () => fetchWeather().catch((e) => renderWeatherStatus(e.message));
+  $("#w-synth").onclick = () => makeSynthetic().catch((e) => renderWeatherStatus(e.message));
+  $("#w-csv").onchange = (ev) => { const f = ev.target.files[0]; if (f) uploadCsv(f); ev.target.value = ""; };
+  $("#r-run").onclick = runStudy; $("#r-cancel").onclick = cancelRun;
+  renderWeatherStatus();
+}
+function renderProfiles() {
+  const root = $("#profiles"); root.innerHTML = "";
+  const used = new Set(S.spec.loads.map((l) => l.profile));
+  for (const [name, vals] of Object.entries(S.spec.profiles)) {
+    if (name === "flat" && !used.has("flat")) continue;
+    const card = h("div", {});
+    const mx = Math.max(1, ...vals);
+    const pts = vals.map((v, i) => `${(i / 23) * 236 + 2},${42 - (v / mx) * 38}`).join(" ");
+    const spark = svgEl({ viewBox: "0 0 240 46", width: "100%", height: "46", role: "img", "aria-label": `${name} profile`, preserveAspectRatio: "none" });
+    spark.innerHTML = `<line x1="2" y1="42" x2="238" y2="42" stroke="${cssVar("--grid")}" stroke-width="1"/><polyline points="${pts}" fill="none" stroke="${cssVar("--after")}" stroke-width="2" stroke-linejoin="round"/>`;
+    const n = S.spec.loads.filter((l) => l.profile === name).length;
+    card.append(h("div", { class: "row" }, h("b", { style: { textTransform: "capitalize" } }, name), h("span", { class: "muted", style: { fontSize: "12px" } }, `${n} load${n === 1 ? "" : "s"}`)), spark);
+    const g = h("div", { class: "profgrid" });
+    vals.forEach((v, i) => {
+      const inp = h("input", { type: "number", step: "0.01", min: "0", value: v, title: `${String(i).padStart(2, "0")}:00`, "aria-label": `${name} ${i}:00` });
+      inp.onchange = () => { const x = Number(inp.value); if (isFinite(x) && x >= 0) { S.spec.profiles[name][i] = x; saveSpec(); S.dirty = true; renderProfiles(); } };
+      g.append(inp);
+    });
+    card.append(g); root.append(card);
+  }
+}
+function periodHours() { return Math.max(1, Math.round(S.study.days)) * 24; }
+function dayOfYear(iso) { const d = new Date(iso + "T00:00:00Z"); return Math.floor((d - Date.UTC(d.getUTCFullYear(), 0, 1)) / 864e5) + 1; }
+function addDays(iso, n) { const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function weatherMatches() {
+  const w = S.weather; if (!w) return false;
+  return w.start === S.study.start && w.ghi.length >= periodHours() && (w.source !== "synthetic" || (w.lat === S.study.lat && w.lon === S.study.lon));
+}
+function renderWeatherStatus(err) {
+  const box = $("#w-status"); box.innerHTML = "";
+  if (err) box.append(h("div", { class: "note err", text: err }));
+  const w = S.weather;
+  if (!w) { box.append(h("div", { class: "note" }, "No weather loaded yet. Running the study uses the synthetic example unless you fetch or upload real data.")); return; }
+  const n = Math.min(w.ghi.length, periodHours());
+  const pv = w.ghi.slice(0, n).reduce((a, g) => a + Math.min(1, Math.max(0, g / 1000)), 0) / n;
+  const wcf = w.wind.slice(0, n).reduce((a, v) => a + (v >= 3 && v < 12 ? ((v - 3) / 9) ** 3 : v >= 12 && v <= 25 ? 1 : 0), 0) / n;
+  const ok = weatherMatches();
+  const label = w.source === "synthetic" ? "Synthetic example weather (not measured)" : w.source === "openmeteo" ? "Open-Meteo historical weather (ERA5)" : "Uploaded weather file";
+  box.append(h("div", { class: "note" + (ok ? "" : " warn") },
+    h("b", {}, label), ` · ${w.start} to ${addDays(w.start, Math.ceil(w.ghi.length / 24) - 1)} · ${w.ghi.length} hours`,
+    h("br"), `Average PV output ${fmt(pv * 100, 1)} % of installed power · average wind turbine output ${fmt(wcf * 100, 1)} %.`,
+    ok ? null : h("span", {}, h("br"), w.source === "synthetic" ? "The period changed; new synthetic weather is made when you run." : "The data does not cover the chosen period. Fetch or upload again, or the synthetic example is used.")));
+}
+async function makeSynthetic() {
+  const r = await engine.json("synthetic", [S.study.lat, S.study.lon, dayOfYear(S.study.start), periodHours()]);
+  S.weather = { source: "synthetic", start: S.study.start, lat: S.study.lat, lon: S.study.lon, ghi: r.ghi, wind: r.wind };
+  renderWeatherStatus();
+}
+function openMeteoUrl(csv) {
+  const end = addDays(S.study.start, Math.round(S.study.days) - 1);
+  return `https://archive-api.open-meteo.com/v1/archive?latitude=${S.study.lat}&longitude=${S.study.lon}&start_date=${S.study.start}&end_date=${end}&hourly=shortwave_radiation,wind_speed_100m&wind_speed_unit=ms&timezone=auto${csv ? "&format=csv" : ""}`;
+}
+async function fetchWeather() {
+  const box = $("#w-status"); box.innerHTML = ""; box.append(h("div", { class: "note" }, "Fetching from Open-Meteo…"));
+  let data;
+  try {
+    const r = await fetch(openMeteoUrl(false));
+    if (!r.ok) throw new Error(`Open-Meteo answered ${r.status}. ${(await r.text()).slice(0, 160)}`);
+    data = await r.json();
+  } catch (e) {
+    box.innerHTML = "";
+    const url = openMeteoUrl(true);
+    const a = h("a", { href: url, target: "_blank", rel: "noopener" }, "Download the CSV from Open-Meteo");
+    box.append(h("div", { class: "note warn" }, h("b", {}, "This page could not reach Open-Meteo. "),
+      "Shared preview pages are not allowed to contact other servers; the version hosted on its own site can. ", a,
+      " for this place and period, then choose “Upload Open-Meteo CSV”."));
+    return;
+  }
+  const hr = data.hourly || {};
+  const ghi = (hr.shortwave_radiation || []).map((v) => Number(v) || 0), wind = (hr.wind_speed_100m || []).map((v) => Number(v) || 0);
+  if (!ghi.length) throw new Error("Open-Meteo returned no hourly data for this period.");
+  S.weather = { source: "openmeteo", start: S.study.start, lat: S.study.lat, lon: S.study.lon, ghi, wind };
+  renderWeatherStatus(); toast(`Fetched ${ghi.length} hours of weather.`);
+}
+async function uploadCsv(file) {
+  const text = await file.text(); const lines = text.split(/\r?\n/);
+  const hi = lines.findIndex((l) => /^time\s*,/i.test(l.trim()));
+  if (hi < 0) { renderWeatherStatus("This CSV has no header row starting with “time”. Use the Open-Meteo CSV export."); return; }
+  const head = lines[hi].split(",").map((s) => s.trim().toLowerCase());
+  const gi = head.findIndex((c) => c.startsWith("shortwave_radiation")), wi = head.findIndex((c) => c.startsWith("wind_speed_100m"));
+  if (gi < 0 || wi < 0) { renderWeatherStatus("The CSV needs the columns shortwave_radiation and wind_speed_100m."); return; }
+  const kmh = /km\/h/.test(head[wi]);
+  const ghi = [], wind = []; let start = null;
+  for (const l of lines.slice(hi + 1)) {
+    const c = l.split(","); if (c.length <= Math.max(gi, wi) || !c[0]) continue;
+    if (!start) start = c[0].slice(0, 10);
+    ghi.push(Number(c[gi]) || 0); wind.push((Number(c[wi]) || 0) / (kmh ? 3.6 : 1));
+  }
+  if (ghi.length < 24) { renderWeatherStatus("The CSV has less than one day of data."); return; }
+  S.study.start = start; S.study.days = Math.floor(ghi.length / 24); $("#w-start").value = start; $("#w-days").value = S.study.days; saveStudy();
+  S.weather = { source: "csv", start, ghi, wind }; renderWeatherStatus(); updateEstimate(); toast(`Loaded ${ghi.length} hours from ${file.name}.`);
+}
+const SEC_PER_YEAR = { tangent: 14, tangent_hourly: 24, piecewise: 55 };
+function nWorkers() { const c = navigator.hardwareConcurrency || 2; return Math.max(1, Math.min(4, Math.floor(c / 2))); }
+function updateEstimate() {
+  if (!S.spec) return;
+  const f = periodHours() / 8760; const sizeF = Math.max(1, (S.spec.buses.length / 15) ** 1.6) * Math.max(1, elementList().length / 17);
+  let s = (SEC_PER_YEAR[S.study.model] * f * sizeF + 2);
+  const nb = candidates().length;
+  if (S.study.mode === "all") s = s * nb / (s * nb > 60 ? nWorkers() : 1) + (s * nb > 60 ? 10 : 0);
+  $("#r-est").textContent = `Estimated time on this device: ${s < 60 ? Math.max(1, Math.round(s)) + " s" : Math.round(s / 60) + " min"}` + (S.study.mode === "all" ? ` · ${nb} placements` : "");
+}
+
+// ============================================================ running
+let pool = [];
+function setProgress(stage, frac) {
+  $("#r-progress").hidden = false; $("#r-bar").style.width = Math.round(Math.min(1, Math.max(0, frac)) * 100) + "%"; $("#r-txt").textContent = stage;
+}
+function settingsPayload() {
+  const s = S.study;
+  return { battery_mw: s.mw, battery_mwh: s.mwh, eta_c: s.eta_c / 100, eta_d: s.eta_d / 100, soc_init: s.soc / 100, dt_h: 1,
+    probe_mw: s.probe, n_levels: Math.max(3, Math.round(s.levels) | 1), weight_line: s.wl, weight_trafo: s.wt };
+}
+function runError(msg) { $("#r-msg").innerHTML = ""; $("#r-msg").append(h("div", { class: "note err", style: { marginTop: "10px" }, text: msg })); }
+async function runStudy() {
+  if (S.running) return;
+  if (!engine || !engine.ready) { runError("The engine is still starting. Try again in a moment."); return; }
+  const s = S.study; $("#r-msg").innerHTML = "";
+  if (!(s.mw > 0 && s.mwh > 0)) return runError("Battery power and energy must be above zero.");
+  if (s.eta_c <= 0 || s.eta_c > 100 || s.eta_d <= 0 || s.eta_d > 100) return runError("Efficiencies must be between 0 and 100 %.");
+  if (s.mode === "one" && !busById(s.bus)) return runError("Choose a bus for the battery.");
+  S.running = true; $("#r-run").disabled = true; $("#r-cancel").hidden = false;
+  const t0 = performance.now();
+  try {
+    setProgress("Preparing weather", 0.01);
+    if (!weatherMatches()) await makeSynthetic();
+    const n = periodHours(); const w = S.weather;
+    const ghi = JSON.stringify(w.ghi.slice(0, n)), wind = JSON.stringify(w.wind.slice(0, n));
+    const spec = JSON.stringify(S.spec), set = JSON.stringify(settingsPayload());
+    setProgress("Running the baseline period", 0.03);
+    const base = await engine.json("new_study", [spec, ghi, wind, set], (st, f) => setProgress(st, 0.03 + 0.05 * f));
+    const meta = { study: clone(s), weather: { source: w.source, start: w.start, hours: base.hours }, spec: clone(S.spec), started: new Date() };
+    if (s.mode === "one") {
+      const r = await engine.json("run_bus", [s.bus, s.objective, s.model], (st, f) => setProgress(st, 0.1 + 0.85 * f));
+      S.results = { kind: "one", base, meta, single: r, ranking: null };
+    } else {
+      const buses = candidates().map((b) => b.id);
+      const est = SEC_PER_YEAR[s.model] * n / 8760 * buses.length;
+      const k = est > 60 ? Math.min(nWorkers(), buses.length) : 1;
+      const parts = Array.from({ length: k }, (_, i) => buses.filter((_, j) => j % k === i));
+      const fr = new Array(k).fill(0);
+      const tick = (i) => (st, f) => { fr[i] = f; setProgress(`${k > 1 ? `${k} parallel engines · ` : ""}${st}`, 0.1 + 0.85 * fr.reduce((a, b) => a + b, 0) / k); };
+      const engines = [engine];
+      for (let i = 1; i < k; i++) { const e = new Engine(); pool.push(e); engines.push(e); }
+      const jobs = parts.map(async (p, i) => {
+        const e = engines[i];
+        if (i > 0) { setProgress(`Starting ${k} parallel engines`, 0.08); await e.readyP; await e.json("new_study", [spec, ghi, wind, set]); }
+        return e.json("run_all", [s.objective, s.model, JSON.stringify(p)], tick(i));
+      });
+      const all = (await Promise.all(jobs)).flat();
+      pool.forEach((e) => e.terminate()); pool = [];
+      const order = new Map(buses.map((b, i) => [b, i])); all.sort((a, b) => order.get(a.bus) - order.get(b.bus));
+      S.results = { kind: "all", base, meta, ranking: all, single: null };
+    }
+    S.results.meta.seconds = (performance.now() - t0) / 1000;
+    S.dirty = false;
+    setProgress(`Done in ${fmt(S.results.meta.seconds, 0)} s`, 1);
+    $("#rescount").textContent = S.results.kind === "all" ? String(S.results.ranking.length) : "1";
+    showView("results");
+  } catch (e) {
+    if (e.message !== "Cancelled") runError(e.message);
+  } finally {
+    S.running = false; $("#r-run").disabled = false; $("#r-cancel").hidden = true;
+  }
+}
+function cancelRun() {
+  pool.forEach((e) => e.terminate()); pool = [];
+  engine.terminate(); startEngine();
+  S.running = false; $("#r-run").disabled = false; $("#r-cancel").hidden = true; setProgress("Cancelled", 0);
+}
+
+// ============================================================ results
+let charts = [];
+function destroyCharts() { charts.forEach((c) => c.destroy()); charts = []; }
+function renderResults() {
+  const root = $("#view-results"); destroyCharts(); root.innerHTML = "";
+  const R = S.results;
+  if (!R) {
+    root.append(h("div", { class: "card empty" }, h("h2", {}, "No results yet"),
+      h("p", {}, "Set up the period, battery and objective under Study, then run it. The CIGRE MV example is ready to go: one placement over one week takes a few seconds."),
+      h("button", { class: "btn primary", onclick: () => showView("study") }, "Go to Study")));
+    return;
+  }
+  const m = R.meta, st = m.study;
+  const objTxt = st.objective === "minmax" ? "Objective 1 · lower the average peak" : `Objective 3 · weighted squared peaks (lines ${st.wl}, transformers ${st.wt})`;
+  const modelTxt = { tangent: "sensitivity at peak hour", tangent_hourly: "hourly sensitivities", piecewise: "piecewise linear AC model" }[st.model];
+  const head = h("div", { class: "row" },
+    h("div", { style: { minWidth: 0 } }, h("span", { class: "eyebrow" }, `${m.spec.name || "Network"} · ${m.weather.start} to ${addDays(m.weather.start, Math.ceil(m.weather.hours / 24) - 1)} · ${m.weather.source === "synthetic" ? "synthetic weather" : "measured weather"}`),
+      h("h2", {}, R.kind === "all" ? "Where should the battery go?" : `Battery at ${R.single.bus_name}`)),
+    h("span", { class: "spacer" }),
+    h("span", { class: "chip" }, `${fmt(st.mw, 1)} MW / ${fmt(st.mwh, 1)} MWh`), h("span", { class: "chip" }, objTxt), h("span", { class: "chip" }, modelTxt));
+  root.append(head);
+  if (S.dirty) root.append(h("div", { class: "note warn" }, "The network or the study settings changed after this run. Run the study again to update the results."));
+  if (R.kind === "all") renderRanking(root);
+  const detail = h("div", { id: "detail", style: { display: "flex", flexDirection: "column", gap: "14px" } });
+  root.append(detail);
+  if (R.single) renderDetail(detail, R.single);
+}
+function objMetric(r, obj) { return obj === "minmax" ? r.mean_of_max_after_pct : r.weighted_overload_after; }
+function renderRanking(root) {
+  const R = S.results, obj = R.meta.study.objective;
+  const ok = R.ranking.filter((r) => !r.error); const bad = R.ranking.filter((r) => r.error);
+  const sorted = ok.slice().sort((a, b) => objMetric(a, obj) - objMetric(b, obj));
+  const card = h("div", { class: "card" });
+  card.append(h("div", { class: "chart-title" }, h("h3", {}, obj === "minmax" ? "Reduction of the average element peak, by placement" : "Reduction of the weighted squared peaks, by placement"),
+    h("span", { class: "muted" }, "Validated with AC load flow. Click a placement to see its schedule.")));
+  // bars
+  const vals = sorted.map((r) => obj === "minmax" ? r.mean_of_max_before_pct - r.mean_of_max_after_pct : 100 * (1 - r.weighted_overload_after / r.weighted_overload_before));
+  const unit = obj === "minmax" ? " pp" : " %";
+  const W = 640, rowH = 24, padL = 120, padR = 70, H = sorted.length * rowH + 30;
+  const mx = Math.max(1e-9, ...vals.map(Math.abs));
+  const svg = svgEl({ viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: "max-width:100%;height:auto", role: "img", "aria-label": "Improvement by battery placement" });
+  const sx = (v) => padL + Math.max(0, v) / mx * (W - padL - padR);
+  let s = `<line x1="${padL}" y1="4" x2="${padL}" y2="${H - 24}" stroke="${cssVar("--line")}"/>`;
+  sorted.forEach((r, i) => {
+    const y = 6 + i * rowH, v = vals[i], best = i === 0;
+    s += `<g class="rankrow" data-bus="${r.bus}" style="cursor:pointer"><rect x="0" y="${y - 2}" width="${W}" height="${rowH}" fill="transparent"/>`;
+    s += `<text x="${padL - 8}" y="${y + 13}" text-anchor="end" font-size="12" fill="${cssVar("--ink")}" font-weight="${best ? 600 : 400}">${esc(r.bus_name)}</text>`;
+    s += `<rect x="${padL}" y="${y + 3}" width="${Math.max(2, sx(v) - padL)}" height="${rowH - 10}" rx="3" fill="${best ? cssVar("--after") : cssVar("--before")}"/>`;
+    s += `<text x="${sx(v) + 6}" y="${y + 13}" font-size="11" font-family="IBM Plex Mono, monospace" fill="${cssVar("--ink-2")}">${fmt(v, obj === "minmax" ? 2 : 1)}${unit}</text></g>`;
+  });
+  s += `<text x="${padL}" y="${H - 6}" font-size="11" fill="${cssVar("--muted")}">0</text><text x="${W - padR}" y="${H - 6}" font-size="11" text-anchor="end" fill="${cssVar("--muted")}">${fmt(mx, obj === "minmax" ? 2 : 1)}${unit}</text>`;
+  svg.innerHTML = s;
+  svg.addEventListener("click", (ev) => { const g = ev.target.closest(".rankrow"); if (g) openPlacement(Number(g.getAttribute("data-bus"))); });
+  card.append(h("div", { style: { overflowX: "auto", marginTop: "8px" } }, svg));
+  // table
+  const tbl = h("table", { class: "t rank" });
+  tbl.append(h("thead", {}, h("tr", {}, ...["Rank", "Placement", "Average peak", "Highest loading", "Weighted squared peaks", "Hours overloaded", "TSO exchange σ", "Cycles"].map((t) => h("th", {}, t)))));
+  const tb = h("tbody");
+  sorted.forEach((r, i) => {
+    const tr = h("tr", { onclick: () => openPlacement(r.bus) });
+    tr.append(h("td", { class: "n" }, String(i + 1)), h("td", { class: i === 0 ? "best" : null }, r.bus_name),
+      h("td", { class: "n" }, `${fmt(r.mean_of_max_before_pct, 2)} → ${fmt(r.mean_of_max_after_pct, 2)} %`),
+      h("td", { class: "n" }, `${fmt(r.max_loading_before_pct, 1)} → ${fmt(r.max_loading_after_pct, 1)} %`),
+      h("td", { class: "n" }, `${fmtSigned(100 * (r.weighted_overload_after / r.weighted_overload_before - 1), 1)} %`),
+      h("td", { class: "n" }, `${r.hours_overloaded_before} → ${r.hours_overloaded_after}`),
+      h("td", { class: "n" }, `${fmt(r.tso_std_before_mw, 2)} → ${fmt(r.tso_std_after_mw, 2)} MW`),
+      h("td", { class: "n" }, fmt(r.equivalent_cycles, 1)));
+    tb.append(tr);
+  });
+  tbl.append(tb);
+  card.append(h("div", { class: "tblwrap", style: { marginTop: "12px", maxHeight: "none" } }, tbl));
+  if (bad.length) card.append(h("div", { class: "note err", style: { marginTop: "10px" } }, bad.map((r) => `${r.bus_name}: ${r.error}`).join(" · ")));
+  $("#view-results").append(card);
+}
+async function openPlacement(bus) {
+  const det = $("#detail"); det.innerHTML = ""; destroyCharts();
+  det.append(h("div", { class: "card" }, h("div", { class: "progress" }, h("div", { class: "bar" }, h("i", { id: "d-bar" })), h("div", { class: "txt", id: "d-txt" }, `Re-running ${busName(bus)} with full detail…`))));
+  det.scrollIntoView({ behavior: "smooth", block: "start" });
+  try {
+    const st = S.results.meta.study;
+    const r = await engine.json("run_bus", [bus, st.objective, st.model], (s, f) => { const b = $("#d-bar"); if (b) { b.style.width = Math.round(f * 100) + "%"; $("#d-txt").textContent = s; } });
+    S.results.single = r; det.innerHTML = ""; renderDetail(det, r);
+  } catch (e) { det.innerHTML = ""; det.append(h("div", { class: "note err", text: e.message })); }
+}
+function kpi(label, before, after, unit, d, lowerBetter = true, note) {
+  const diff = after - before; const good = lowerBetter ? diff < -1e-9 : diff > 1e-9; const bad = lowerBetter ? diff > 1e-9 : diff < -1e-9;
+  return h("div", { class: "kpi" }, h("div", { class: "eyebrow" }, label),
+    h("div", { class: "big" }, h("span", { class: "from" }, fmt(before, d)), h("span", { class: "arr" }, "→"), h("span", {}, fmt(after, d) + unit)),
+    h("div", { class: "d " + (good ? "good" : bad ? "bad" : "") }, note || `${fmtSigned(diff, d)}${unit.trim() === "%" ? " pp" : unit}`));
+}
+function renderDetail(root, r) {
+  const R = S.results, st = R.meta.study, base = R.base;
+  const els = base.elements;
+  const w = r.weighted_overload_before ? 100 * (r.weighted_overload_after / r.weighted_overload_before - 1) : 0;
+  const k = h("div", { class: "kpis" },
+    kpi("Average element peak", r.mean_of_max_before_pct, r.mean_of_max_after_pct, " %", 2),
+    kpi("Highest loading anywhere", r.max_loading_before_pct, r.max_loading_after_pct, " %", 1),
+    kpi("Weighted squared peaks", r.weighted_overload_before, r.weighted_overload_after, "", 0, true, `${fmtSigned(w, 1)} %`),
+    h("div", { class: "kpi" }, h("div", { class: "eyebrow" }, "Battery use"), h("div", { class: "big" }, h("span", {}, fmt(r.equivalent_cycles, 1)), h("span", { class: "from" }, "full cycles")),
+      h("div", { class: "d" }, `${fmt(r.energy_discharged_mwh, 1)} MWh discharged · SOC ${fmt(r.soc_min_mwh, 1)}–${fmt(r.soc_max_mwh, 1)} MWh`)));
+  root.append(k);
+  const chips = h("div", { class: "row" });
+  const chip = (txt, status) => { const c = h("span", { class: "chip" }); if (status) { const i = h("i"); i.style.background = cssVar("--" + status); c.append(i); } c.append(txt); return c; };
+  chips.append(chip(`Voltage ${fmt(r.vm_min_after, 3)}–${fmt(r.vm_max_after, 3)} pu (before ${fmt(r.vm_min_before, 3)}–${fmt(r.vm_max_before, 3)})`, r.vm_min_after < 0.9 || r.vm_max_after > 1.1 ? "crit" : null));
+  chips.append(chip(`Hours with an overload: ${r.hours_overloaded_before} → ${r.hours_overloaded_after}`, r.hours_overloaded_after ? "crit" : "good"));
+  chips.append(chip(`TSO exchange σ ${fmt(r.tso_std_before_mw, 2)} → ${fmt(r.tso_std_after_mw, 2)} MW`));
+  if (r.simultaneous_mwh > 0.05) chips.append(chip(`The linear model charged and discharged at the same time (${fmt(r.simultaneous_mwh, 1)} MWh). The piecewise model avoids this.`, "warn"));
+  if (r.soc_min_mwh < -1e-3 || r.soc_max_mwh > st.mwh + 1e-3) chips.append(chip("The schedule leaves the battery’s energy limits when run physically.", "crit"));
+  chips.append(chip(`Solved in ${fmt((r.timing.model_s || 0) + (r.timing.optimise_s || 0) + (r.timing.validate_s || 0), 1)} s`));
+  root.append(chips);
+
+  // ----- time series
+  const T = base.hours; const t0 = Date.parse(R.meta.weather.start + "T00:00:00Z") / 1000;
+  const xs = Float64Array.from({ length: T }, (_, i) => t0 + i * 3600);
+  const pathIdx = r.path.length ? r.path : els.map((_, i) => i);
+  let focus = pathIdx.reduce((best, i) => (r.peaks_before[i] > r.peaks_before[best] ? i : best), pathIdx[0]);
+  const ts = h("div", { class: "card" });
+  const sel = h("select", { class: "cell", style: { width: "auto" } });
+  els.forEach((e, i) => sel.append(h("option", { value: i, selected: i === focus ? true : null }, `${e.name}${r.path.includes(i) ? " · on the battery’s path" : ""}`)));
+  const readout = h("div", { class: "mono muted", style: { fontSize: "12px", minHeight: "18px" } });
+  const zoomBtns = h("div", { class: "seg" });
+  const bwk = h("button", { "aria-pressed": "false" }, "Busiest week"), all = h("button", { "aria-pressed": "true" }, "Whole period");
+  zoomBtns.append(all, bwk);
+  ts.append(h("div", { class: "row" }, h("h3", {}, "Schedule and its effect"), h("span", { class: "spacer" }), h("label", { class: "row muted", style: { fontSize: "12px" } }, "Element", sel), zoomBtns),
+    h("p", { class: "muted", style: { fontSize: "12px", margin: "4px 0 8px" } }, "Drag across a chart to zoom in, double-click to zoom out. Hover to read every series at that hour."), readout);
+  const c1 = h("div", { class: "chart" }), c2 = h("div", { class: "chart" }), c3 = h("div", { class: "chart" });
+  const leg = (items) => h("div", { class: "leg" }, items.map(([c, t]) => { const s = h("span", {}); const i = h("i"); i.style.background = c; s.append(i, t); return s; }));
+  ts.append(h("div", { class: "eyebrow", style: { marginTop: "6px" } }, "Battery power, MW (+ discharge, − charge)"), c1,
+    h("div", { class: "eyebrow", style: { marginTop: "10px" } }, "Stored energy, MWh"), c2,
+    h("div", { class: "row", style: { marginTop: "10px" } }, h("span", { class: "eyebrow" }, "Loading of the chosen element, %"), h("span", { class: "spacer" }), leg([[cssVar("--before"), "Without battery"], [cssVar("--after"), "With battery"]])), c3);
+  root.append(ts);
+  const sched = r.schedule_mw, soc = r.soc_mwh;
+  const colA = cssVar("--after"), colB = cssVar("--before"), axisC = cssVar("--muted"), gridC = cssVar("--grid");
+  const axes = (unit) => [{ stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { stroke: gridC, width: 1 }, font: "11px IBM Plex Sans, system-ui" },
+    { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, font: "11px IBM Plex Mono, monospace", size: 46, values: (u, v) => v.map((x) => fmt(x, Math.abs(x) < 10 && x % 1 ? 1 : 0) + unit) }];
+  const syncKey = "gfbp-" + Math.random();
+  const dateFmt = (sec) => new Date(sec * 1000).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+  let lastIdx = null;
+  const updReadout = (idx) => {
+    if (idx == null) { readout.textContent = ""; return; } lastIdx = idx;
+    const f = Number(sel.value); const p = sched[idx];
+    readout.textContent = `${dateFmt(xs[idx])} · battery ${p > 0.005 ? "discharges" : p < -0.005 ? "charges" : "idle"} ${fmt(Math.abs(p), 2)} MW · stored ${fmt(soc[idx], 2)} MWh · ${els[f].name}: ${fmt(base.loading[idx][f], 1)} % → ${fmt(r.loading_after[idx][f], 1)} %`;
+  };
+  const mk = (el, series, data, yr, unit, height, splits) => {
+    const width = Math.max(280, el.clientWidth || root.clientWidth - 40);
+    const u = new uPlot({ width, height, padding: [8, 8, 0, 0], cursor: { sync: { key: syncKey, setSeries: false }, drag: { x: true, y: false }, points: { size: 7 } },
+      legend: { show: false }, scales: { x: { time: true }, y: yr ? { range: yr } : {} }, axes: (() => { const ax = axes(unit); if (splits) ax[1].splits = () => splits; return ax; })(), series: [{}, ...series],
+      hooks: { setCursor: [(u) => updReadout(u.cursor.idx)] } }, data, el);
+    charts.push(u); return u;
+  };
+  const P = st.mw;
+  const u1 = mk(c1, [{ stroke: colA, width: 1.5, fill: colA + "33", fillTo: 0, paths: uPlot.paths.stepped({ align: 1 }) }], [xs, Float64Array.from(sched)], [-P * 1.08, P * 1.08], "", 140, [-P, -P / 2, 0, P / 2, P]);
+  const u2 = mk(c2, [{ stroke: colA, width: 2 }], [xs, Float64Array.from(soc)], [0, st.mwh * 1.04], "", 110, [0, st.mwh / 2, st.mwh]);
+  const lineData = (f) => [xs, Float64Array.from(base.loading, (row) => row[f]), Float64Array.from(r.loading_after, (row) => row[f])];
+  const u3 = mk(c3, [{ stroke: colB, width: 1.5 }, { stroke: colA, width: 2 }], lineData(focus), null, "", 170);
+  sel.onchange = () => { u3.setData(lineData(Number(sel.value))); updReadout(lastIdx); };
+  const setRange = (a, b) => [u1, u2, u3].forEach((u) => u.setScale("x", { min: a, max: b }));
+  all.onclick = () => { all.setAttribute("aria-pressed", "true"); bwk.setAttribute("aria-pressed", "false"); setRange(xs[0], xs[T - 1]); };
+  bwk.onclick = () => {
+    const f = Number(sel.value); let pk = 0; base.loading.forEach((row, i) => { if (row[f] > base.loading[pk][f]) pk = i; });
+    const a = Math.max(0, pk - 84), b = Math.min(T - 1, a + 167);
+    all.setAttribute("aria-pressed", "false"); bwk.setAttribute("aria-pressed", "true"); setRange(xs[a], xs[b]);
+  };
+  const ro = new ResizeObserver(() => { const wdt = Math.max(280, c1.clientWidth); [u1, u2, u3].forEach((u) => u.setSize({ width: wdt, height: u.height })); });
+  ro.observe(ts); charts.push({ destroy: () => ro.disconnect() });
+
+  // ----- element peaks (dumbbell) + map
+  const grid = h("div", { class: "resgrid" });
+  grid.append(peaksCard(r, els), mapCard(r));
+  root.append(grid);
+  const exp = h("div", { class: "row" }, h("button", { class: "btn", onclick: () => showExport("results") }, "Hourly results as CSV"), h("span", { class: "muted", style: { fontSize: "12px" } }, "Every hour: battery power, stored energy and the loading of each line and transformer, with and without battery."));
+  root.append(exp);
+}
+function peaksCard(r, els) {
+  const card = h("div", { class: "card" });
+  card.append(h("div", { class: "chart-title" }, h("h3", {}, "Peak loading per element")),
+    h("div", { class: "leg", style: { marginTop: "6px" } }, (() => { const a = h("span", {}), b = h("span", {}); const i1 = h("i", { class: "dotk" }), i2 = h("i", { class: "dotk" }); i1.style.background = cssVar("--before"); i2.style.background = cssVar("--after"); a.append(i1, "Without battery"); b.append(i2, "With battery"); return [a, b, h("span", { class: "muted" }, "Bold: on the battery’s path to the grid")]; })()));
+  const idx = els.map((_, i) => i).sort((a, b) => r.peaks_before[b] - r.peaks_before[a]);
+  const W = 560, rowH = 22, padL = 150, padR = 92, H = idx.length * rowH + 28;
+  const mx = Math.max(100, ...r.peaks_before, ...r.peaks_after);
+  const sx = (v) => padL + (v / mx) * (W - padL - padR);
+  const path = new Set(r.path);
+  let s = "";
+  for (const t of [0, 25, 50, 75, 100]) if (t <= mx) s += `<line x1="${sx(t)}" y1="0" x2="${sx(t)}" y2="${H - 22}" stroke="${cssVar(t === 100 ? "--line" : "--grid")}"/><text x="${sx(t)}" y="${H - 8}" text-anchor="middle" font-size="10" font-family="IBM Plex Mono, monospace" fill="${cssVar("--muted")}">${t}%</text>`;
+  idx.forEach((i, row) => {
+    const y = 4 + row * rowH + rowH / 2, a = r.peaks_before[i], b = r.peaks_after[i];
+    s += `<g><rect class="row-hit" x="0" y="${y - rowH / 2}" width="${W}" height="${rowH}"/><title>${esc(els[i].name)}: ${fmt(a, 1)} % → ${fmt(b, 1)} %</title>`;
+    s += `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-size="11.5" fill="${cssVar("--ink")}" font-weight="${path.has(i) ? 600 : 400}">${esc(els[i].name.length > 22 ? els[i].name.slice(0, 21) + "…" : els[i].name)}</text>`;
+    s += `<line x1="${sx(a)}" y1="${y}" x2="${sx(b)}" y2="${y}" stroke="${cssVar("--line")}" stroke-width="2"/>`;
+    s += `<circle cx="${sx(a)}" cy="${y}" r="4.5" fill="${cssVar("--before")}" stroke="${cssVar("--panel")}" stroke-width="2"/><circle cx="${sx(b)}" cy="${y}" r="4.5" fill="${cssVar("--after")}" stroke="${cssVar("--panel")}" stroke-width="2"/>`;
+    s += `<text x="${W - 4}" y="${y + 4}" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="${cssVar("--ink-2")}">${fmt(a, 1)} → ${fmt(b, 1)}</text></g>`;
+  });
+  const svg = svgEl({ class: "dumb", viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: "max-width:100%;height:auto", role: "img", "aria-label": "Peak loading per element with and without battery" });
+  svg.innerHTML = s;
+  card.append(h("div", { style: { overflowX: "auto", marginTop: "8px" } }, svg));
+  return card;
+}
+function mapCard(r) {
+  const R = S.results, base = R.base, spec = R.meta.spec, els = base.elements, T = base.hours;
+  const card = h("div", { class: "card", style: { display: "flex", flexDirection: "column", gap: "10px" } });
+  let hour = 0; base.loading.forEach((row, i) => { const v = r.path.reduce((a, j) => a + row[j], 0); if (v > r.path.reduce((a, j) => a + base.loading[hour][j], 0)) hour = i; });
+  let mode = "after"; let timer = null;
+  const wrap = h("div", { class: "mapwrap" }); const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("class", "sld"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Network loading at the selected hour"); wrap.append(svg);
+  const slider = h("input", { type: "range", min: 0, max: T - 1, value: hour, "aria-label": "Hour" });
+  const lbl = h("span", { class: "mono", style: { minWidth: "150px" } });
+  const seg = h("div", { class: "seg" }); const bB = h("button", { "aria-pressed": "false" }, "Without"), bA = h("button", { "aria-pressed": "true" }, "With battery"); seg.append(bB, bA);
+  const play = h("button", { class: "btn" }, "Play");
+  const t0 = Date.parse(R.meta.weather.start + "T00:00:00Z");
+  const saved = { buses: S.spec }; // renderSLD reads busById from S.spec, so swap temporarily
+  const draw = () => {
+    const vals = {}; const L = mode === "after" ? r.loading_after[hour] : base.loading[hour];
+    els.forEach((e, i) => (vals[elemKey(e.type, e.id)] = L[i]));
+    const keep = S.spec; S.spec = spec;
+    const view = fitView(svg, spec, 46);
+    const vm = {}; const V = mode === "after" ? r.vm_after[hour] : base.vm[hour]; base.buses.forEach((b, i) => (vm[b.id] = V[i]));
+    renderSLD(svg, spec, { view, values: vals, readOnly: true, battery: mode === "after" ? { bus: r.bus, p: r.schedule_mw[hour] } : null, labels: true, showVm: view.k > 0.6, vm });
+    S.spec = keep;
+    lbl.textContent = new Date(t0 + hour * 3600e3).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+  };
+  void saved;
+  slider.oninput = () => { hour = Number(slider.value); draw(); };
+  bB.onclick = () => { mode = "before"; bB.setAttribute("aria-pressed", "true"); bA.setAttribute("aria-pressed", "false"); draw(); };
+  bA.onclick = () => { mode = "after"; bA.setAttribute("aria-pressed", "true"); bB.setAttribute("aria-pressed", "false"); draw(); };
+  play.onclick = () => {
+    if (timer) { clearInterval(timer); timer = null; play.textContent = "Play"; return; }
+    play.textContent = "Pause"; const step = Math.max(1, Math.round(T / 400));
+    timer = setInterval(() => { hour = (hour + step) % T; slider.value = hour; draw(); }, 110);
+  };
+  charts.push({ destroy: () => timer && clearInterval(timer) });
+  card.append(h("div", { class: "chart-title" }, h("h3", {}, "Network at a chosen hour"), h("span", { class: "muted" }, "Starts at the busiest hour on the battery’s path.")),
+    h("div", { class: "mapctl" }, seg, play, slider, lbl), wrap,
+    h("div", { class: "leg" }, h("span", {}, "Loading"), h("span", { class: "heatbar", style: { background: heatGradient() } }), h("span", { class: "mono" }, "0 → 100 %")));
+  requestAnimationFrame(draw);
+  const ro = new ResizeObserver(draw); ro.observe(wrap); charts.push({ destroy: () => ro.disconnect() });
+  return card;
+}
+
+// ============================================================ export modal
+async function showExport(which = "json") {
+  const modal = $("#modal"), ta = $("#modal-text"), tabs = $("#modal-tabs"), note = $("#modal-note");
+  const opts = [["json", "Network (this tool, JSON)"], ["py", "pandapower Python script"]];
+  if (S.results && S.results.single) opts.push(["results", "Hourly results (CSV)"]);
+  const show = async (k) => {
+    tabs.innerHTML = ""; const seg = h("div", { class: "seg" });
+    for (const [id, t] of opts) seg.append(h("button", { "aria-pressed": id === k ? "true" : "false", onclick: () => show(id) }, t));
+    tabs.append(seg);
+    if (k === "json") { ta.value = JSON.stringify(S.spec, null, 1); note.textContent = "Paste into a .json file and load it again with Import JSON."; }
+    if (k === "py") { ta.value = "Building…"; note.textContent = "Runs with pandapower (pip install pandapower). Ends with pp.to_json so you can save it in pandapower’s own format."; try { ta.value = await engine.call("export_script", [JSON.stringify(S.spec)]); } catch (e) { ta.value = e.message; } }
+    if (k === "results") {
+      const R = S.results, r = R.single, b = R.base, els = b.elements; const t0 = Date.parse(R.meta.weather.start + "T00:00:00Z");
+      const head = ["time", "battery_mw", "stored_mwh", ...els.flatMap((e) => [`${e.name} before %`, `${e.name} after %`])];
+      const rows = [head.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(",")];
+      for (let i = 0; i < b.hours; i++) rows.push([new Date(t0 + i * 3600e3).toISOString().slice(0, 16), r.schedule_mw[i], r.soc_mwh[i], ...els.flatMap((_, j) => [b.loading[i][j], r.loading_after[i][j]])].join(","));
+      ta.value = rows.join("\n"); note.textContent = `Battery at ${r.bus_name}. Times are local time at the weather location.`;
+    }
+  };
+  modal.hidden = false; await show(which);
+}
+function hookModal() {
+  $("#modal-close").onclick = () => ($("#modal").hidden = true);
+  $("#modal").addEventListener("click", (ev) => { if (ev.target.id === "modal") $("#modal").hidden = true; });
+  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !$("#modal").hidden) $("#modal").hidden = true; });
+  $("#modal-copy").onclick = async () => {
+    const ta = $("#modal-text");
+    try { await navigator.clipboard.writeText(ta.value); toast("Copied."); }
+    catch { ta.removeAttribute("readonly"); ta.focus(); ta.select(); ta.setAttribute("readonly", ""); toast("Selected. Press Ctrl+C or ⌘C to copy."); }
+  };
+}
+
+// ============================================================ views & boot
+function showView(v) {
+  for (const b of $$(".tabs button")) b.setAttribute("aria-selected", b.dataset.view === v ? "true" : "false");
+  for (const s of ["network", "study", "results", "method"]) $("#view-" + s).hidden = s !== v;
+  if (v === "network") requestAnimationFrame(drawEditor);
+  if (v === "results") renderResults();
+  if (v === "study") { syncStudyForm(); renderWeatherStatus(); }
+  if (location.hash.slice(1) !== v) history.replaceState(null, "", "#" + v);
+  window.scrollTo(0, 0);
+}
+function setNetView(v) {
+  S.netView = v; $("#vw-diagram").setAttribute("aria-pressed", v === "diagram"); $("#vw-tables").setAttribute("aria-pressed", v === "tables");
+  $("#netgrid").hidden = v !== "diagram"; $("#tables").hidden = v !== "tables";
+  if (v === "tables") renderTables(); else requestAnimationFrame(drawEditor);
+}
+let firstReady = true;
+function onEngineReady() {
+  if (!firstReady) return; firstReady = false;
+  checkNetwork(true);
+  if (!S.weather) makeSynthetic().catch(() => {});
+}
+async function boot() {
+  for (const b of $$(".tabs button")) b.onclick = () => showView(b.dataset.view);
+  $("#vw-diagram").onclick = () => setNetView("diagram"); $("#vw-tables").onclick = () => setNetView("tables");
+  $("#btn-new").onclick = () => loadSpec({ name: "New network", f_hz: 50, sn_mva: 1, buses: [{ id: 0, name: "HV grid", vn_kv: 110, x: 0, y: 0 }, { id: 1, name: "MV busbar", vn_kv: 20, x: 0, y: 1.5 }],
+    ext_grids: [{ id: 0, bus: 0, vm_pu: 1.02, va_degree: 0 }], lines: [], trafos: [{ id: 0, name: "Substation", hv_bus: 0, lv_bus: 1, sn_mva: 25, vn_hv_kv: 110, vn_lv_kv: 20, vk_percent: 12, vkr_percent: 0.41, pfe_kw: 0, i0_percent: 0, shift_degree: 30, tap_side: "lv", tap_pos: 0, tap_neutral: 0, tap_step_percent: 1.5, parallel: 1, df: 1 }],
+    loads: [], sgens: [], switches: [], shunts: [] }, { msg: ["", "A substation to start from. Add buses with the bus tool, then connect them with lines."] });
+  $("#btn-cigre").onclick = () => loadSpec(clone(CIGRE));
+  $("#file-import").onchange = (ev) => { const f = ev.target.files[0]; if (f) importFile(f); ev.target.value = ""; };
+  $("#btn-export").onclick = () => showExport("json");
+  $("#btn-check").onclick = () => checkNetwork(false);
+  buildToolbar(); hookCanvas(); hookModal(); initStudyForm();
+  const saved = store.get("spec", null);
+  loadSpec(saved && saved.buses && saved.buses.length ? saved : clone(CIGRE));
+  const v = location.hash.slice(1); showView(["network", "study", "results", "method"].includes(v) ? v : "network");
+  window.addEventListener("hashchange", () => { const v = location.hash.slice(1); if (["network", "study", "results", "method"].includes(v)) showView(v); });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { drawEditor(); if (!$("#view-results").hidden) renderResults(); });
+  new MutationObserver(() => { drawEditor(); if (!$("#view-results").hidden) renderResults(); }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  startEngine();
+}
+/*CIGRE_JSON*/
+boot();
