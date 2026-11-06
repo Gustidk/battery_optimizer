@@ -51,9 +51,12 @@ def validate(spec_json):
         net = Network(json.loads(spec_json))
         P, Q = pf.injections(net, np.ones((1, len(net.loads))), np.ones((1, len(net.sgens))))
         r = pf.solve(net, P, Q)
+        from .study import detail_snapshot
+        detail = detail_snapshot(net, np.ones(len(net.loads)), np.ones(len(net.sgens)))
         return _out({"ok": True, "max_loading": float(r["loading"].max()) if r["loading"].size else 0.0,
                      "vm_min": float(r["vm_pu"].min()), "vm_max": float(r["vm_pu"].max()),
-                     "loading": r["loading"][0].round(3).tolist(), "vm": r["vm_pu"][0].round(5).tolist()})
+                     "loading": r["loading"][0].round(3).tolist(), "vm": r["vm_pu"][0].round(5).tolist(),
+                     "detail": detail})
     except Exception as ex:
         return _out({"ok": False, "error": str(ex)})
 

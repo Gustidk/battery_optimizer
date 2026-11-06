@@ -29,6 +29,45 @@ MODELS = ("tangent", "tangent_hourly", "piecewise")
 OBJECTIVES = ("minmax", "quadratic_peak")
 
 
+def detail_snapshot(net, load_scale, sgen_scale, bat_bus=None, bat_p=0.0):
+    """One AC load flow with full results: bus voltage (kV, pu, degrees); P, Q, I at both
+    ends of every line and transformer (positive = out of that bus into the branch);
+    P, Q, I of every load and generator (load: consumed, generator: delivered) and of
+    each external grid (delivered into the network)."""
+    ls = np.asarray(load_scale, float).reshape(1, -1); ss = np.asarray(sgen_scale, float).reshape(1, -1)
+    P, Q = pf.injections(net, ls if ls.size else np.zeros((1, 0)), ss if ss.size else np.zeros((1, 0)))
+    if bat_bus is not None:
+        P[0, bat_bus] += bat_p
+    r = pf.solve(net, P, Q)
+    V = r["V"][0]
+    sn = net.sn_mva
+    If = net.Yf @ V; It = net.Yt @ V
+    Sf = V[net.f] * np.conj(If) * sn; St = V[net.t] * np.conj(It) * sn
+    Ikf = np.abs(If) * net.i_scale_f; Ikt = np.abs(It) * net.i_scale_t
+    S_calc = V * np.conj(net.Y @ V) * sn
+    ext = S_calc[net.ref] - (P[0, net.ref] + 1j * Q[0, net.ref])
+    loading = r["loading"][0]
+    rd = lambda x, d: float(round(float(x), d))
+    ikA = lambda s, b: abs(s) / (np.sqrt(3) * abs(V[b]) * net.vn_kv[b])          # current from S at bus b
+    lp = (ls[0] * net.load_p) if len(net.loads) else []; lq = (ls[0] * net.load_q) if len(net.loads) else []
+    gp = (ss[0] * net.sgen_p) if len(net.sgens) else []; gq = (ss[0] * net.sgen_q) if len(net.sgens) else []
+    return {
+        "buses": [{"id": bid, "kv": rd(abs(V[i]) * net.vn_kv[i], 3), "pu": rd(abs(V[i]), 5),
+                   "deg": rd(np.degrees(np.angle(V[i])), 3)} for i, bid in enumerate(net.bus_ids)],
+        "branches": [{"p_from": rd(Sf[k].real, 4), "q_from": rd(Sf[k].imag, 4), "i_from": rd(Ikf[k], 5),
+                      "p_to": rd(St[k].real, 4), "q_to": rd(St[k].imag, 4), "i_to": rd(Ikt[k], 5),
+                      "loading": rd(loading[k], 3)} for k in range(len(net.elements))],
+        "ext_grids": [{"bus": net.bus_ids[int(b)], "p": rd(e.real, 4), "q": rd(e.imag, 4), "i": rd(ikA(e, int(b)), 5)}
+                      for b, e in zip(net.ref, ext)],
+        "loads": [{"id": int(l["id"]), "p": rd(lp[j], 4), "q": rd(lq[j], 4), "i": rd(ikA(lp[j] + 1j * lq[j], net.load_bus[j]), 5)}
+                  for j, l in enumerate(net.loads)],
+        "sgens": [{"id": int(g["id"]), "p": rd(gp[j], 4), "q": rd(gq[j], 4), "i": rd(ikA(gp[j] + 1j * gq[j], net.sgen_bus[j]), 5)}
+                  for j, g in enumerate(net.sgens)],
+        "battery_i": rd(ikA(bat_p, bat_bus), 5) if bat_bus is not None else None,
+        "losses_mw": rd(S_calc.real.sum(), 5),
+    }
+
+
 def physical_soc(schedule, mwh, eta_c, eta_d, soc_init, dt_h):
     """SOC a real battery would follow for a net schedule (+ = discharge)."""
     out = np.empty(len(schedule))
@@ -253,32 +292,11 @@ class Study:
 
     def hour_detail(self, hour, bus_id=None, p_mw=0.0):
         """Full load flow result for ONE hour (optionally with the battery injecting p_mw
-        at bus_id): bus voltage in kV / pu / degrees and P, Q, I at both ends of every
-        line and transformer, as in a PowerFactory single-line diagram."""
-        net = self.net
+        at bus_id), as in a PowerFactory single-line diagram -- see detail_snapshot()."""
         h = int(hour)
-        P = self.P0[h:h + 1].copy(); Q = self.Q0[h:h + 1].copy()
+        out = detail_snapshot(self.net, self.load_scale[h], self.sgen_scale[h],
+                              None if bus_id is None else self.net.bus_pos[int(bus_id)], float(p_mw))
+        out["hour"] = h
         if bus_id is not None:
-            P[0, net.bus_pos[int(bus_id)]] += float(p_mw)
-        r = pf.solve(net, P, Q)
-        V = r["V"][0]
-        sn = net.sn_mva
-        If = net.Yf @ V; It = net.Yt @ V
-        Sf = V[net.f] * np.conj(If) * sn; St = V[net.t] * np.conj(It) * sn
-        Ikf = np.abs(If) * net.i_scale_f; Ikt = np.abs(It) * net.i_scale_t
-        S_calc = V * np.conj(net.Y @ V) * sn
-        ext = S_calc[net.ref] - (P[0, net.ref] + 1j * Q[0, net.ref])
-        loading = r["loading"][0]
-        rd = lambda x, d: float(round(float(x), d))
-        return {
-            "hour": h,
-            "buses": [{"id": bid, "kv": rd(abs(V[i]) * net.vn_kv[i], 3), "pu": rd(abs(V[i]), 5),
-                       "deg": rd(np.degrees(np.angle(V[i])), 3)} for i, bid in enumerate(net.bus_ids)],
-            "branches": [{"p_from": rd(Sf[k].real, 4), "q_from": rd(Sf[k].imag, 4), "i_from": rd(Ikf[k], 5),
-                          "p_to": rd(St[k].real, 4), "q_to": rd(St[k].imag, 4), "i_to": rd(Ikt[k], 5),
-                          "loading": rd(loading[k], 3)} for k in range(len(net.elements))],
-            "ext_grids": [{"bus": net.bus_ids[int(b)], "p": rd(e.real, 4), "q": rd(e.imag, 4),
-                           "i": rd(abs(e) / (np.sqrt(3) * abs(V[int(b)]) * net.vn_kv[int(b)]), 5)}
-                          for b, e in zip(net.ref, ext)],
-            "losses_mw": rd(S_calc.real.sum(), 5),
-        }
+            out["battery"] = {"bus": int(bus_id), "p": round(float(p_mw), 4)}
+        return out

@@ -106,7 +106,7 @@ const S = {
   spec: null, sel: null, tool: "select", pendingBus: null,
   view: { tx: 0, ty: 0, k: 1 }, netView: "diagram", tableTab: "buses",
   check: null, study: { ...DEFAULT_STUDY, ...store.get("study", {}) },
-  weather: null, results: null, running: false, dirty: true, advanced: store.get("advanced", false),
+  weather: null, results: null, running: false, dirty: true, advanced: store.get("advanced", false), netValues: store.get("netValues", false),
 };
 const U = 70; // px per diagram unit
 
@@ -262,12 +262,14 @@ function renderSLD(svg, spec, opts) {
   for (const b of spec.buses) {
     const [x, y] = P(b); const att = attach.get(b.id) || [];
     const sz = Math.min(1, Math.max(0.5, k * 1.1));
-    const hl = Math.max(20, 10 + att.length * 13) * sz; hlOf.set(b.id, hl);
+    const step = opts.detail ? 46 : 13;
+    const hl = Math.max(20, 10 + att.length * step) * sz; hlOf.set(b.id, hl);
     const col = voltColor(b.vn_kv);
     if (isSel("bus", b.id) || (opts.pending === b.id)) out.push(`<line class="sel" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16" stroke-linecap="round"/>`);
     out.push(`<line class="busbar" x1="${x - hl}" y1="${y}" x2="${x + hl}" y2="${y}" stroke="${col}" stroke-width="5"/>`);
     att.forEach((a, i) => {
-      const ox = x + (10 + i * 13) * sz, sel = isSel(a.kind, a.e.id);
+      const ox = x + (opts.detail ? 26 + i * step : 10 + i * step) * sz, sel = isSel(a.kind, a.e.id);
+      a.ox = ox;
       const c = sel ? accent : ink2;
       if (a.kind === "load") {
         out.push(`<path d="M${ox} ${y + 2}v14" stroke="${c}" stroke-width="1.4"/><path d="M${ox - 4.5} ${y + 15}h9l-4.5 7z" fill="${c}"/>`);
@@ -296,12 +298,12 @@ function renderSLD(svg, spec, opts) {
     else if (k > 0.75 && !opts.readOnly) out.push(`<text class="lbl kv" x="${x - hl - 6}" y="${y + 16}" text-anchor="end">${fmt(b.vn_kv, b.vn_kv < 1 ? 2 : 0)} kV</text>`);
     out.push(`<line class="hit" data-k="bus:${b.id}" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16"/>`);
   }
-  if (opts.detail) advancedLabels(out, spec, opts.detail, P, hlOf);
+  if (opts.detail) advancedLabels(out, spec, opts.detail, P, hlOf, attach, opts.battery);
   svg.innerHTML = out.join("");
 }
 /** PowerFactory-style result boxes: P [MW], Q [Mvar], I [kA] at both ends of every branch
     (positive = flowing out of that bus into the branch) and U [kV], u [pu], angle [deg] per bus. */
-function advancedLabels(out, spec, D, P, hlOf) {
+function advancedLabels(out, spec, D, P, hlOf, attach, battery) {
   const n2 = (v) => { const a = Math.abs(v); return fmt(v, a >= 100 ? 0 : a >= 10 ? 1 : 2); };
   const ends = (kind, e, a, b) => {
     const d = D.branches[elemKey(kind, e.id)]; const A = busById(a), B = busById(b);
@@ -312,6 +314,7 @@ function advancedLabels(out, spec, D, P, hlOf) {
       if (sw && !sw.closed && Number(sw.bus) === Number(at)) continue;          // open end carries nothing
       const ux = (ex - sx) / L, uy = (ey - sy) / L, dist = Math.min(L * 0.3, 46);
       let nx = -uy, ny = ux; if (nx < -0.01 || (Math.abs(nx) <= 0.01 && ny < 0)) { nx = -nx; ny = -ny; }   // right of the line, or below it
+      if (uy > 0.3 && (attach.get(Number(at)) || []).length) { nx = -1; ny = 0; }       // loads sit right-below: go left
       const px = sx + ux * dist + nx * 8, py = sy + uy * dist + ny * 8;
       const anchor = nx < -0.3 ? "end" : nx > 0.3 ? "start" : "middle";
       const top = py - 11 + (ny > 0.5 ? 11 : 0);
@@ -327,11 +330,32 @@ function advancedLabels(out, spec, D, P, hlOf) {
     out.push(`<rect class="advbox" x="${x1 - w}" y="${y - 47}" width="${w}" height="37" rx="2" stroke="${voltColor(b.vn_kv)}"/>`);
     out.push(`<text class="adv" text-anchor="end" style="stroke-width:0"><tspan x="${x1 - 4}" y="${y - 36}">${fmt(d.kv, d.kv >= 100 ? 1 : 2)}</tspan><tspan x="${x1 - 4}" y="${y - 25}">${fmt(d.pu, 3)}</tspan><tspan x="${x1 - 4}" y="${y - 14}">${fmt(d.deg, 1)}</tspan></text>`);
   }
+  // loads and generators: their own P, Q (load consumed, generator delivered) and current, under the symbol
+  for (const b of spec.buses) {
+    const [, y] = P(b);
+    for (const a of attach.get(b.id) || []) {
+      const d = a.kind === "load" ? D.loads[a.e.id] : D.sgens[a.e.id]; if (!d || a.ox == null) continue;
+      out.push(`<text class="adv" text-anchor="middle"><tspan x="${a.ox}" y="${y + 36}">${n2(d.p)}</tspan><tspan x="${a.ox}" y="${y + 47}">${n2(d.q)}</tspan><tspan x="${a.ox}" y="${y + 58}">${fmt(d.i, 3)}</tspan></text>`);
+    }
+  }
+  if (battery && D.battery_i != null) {
+    const b = busById(battery.bus);
+    if (b) { const [x, y] = P(b); const hl = hlOf.get(b.id) || 20; out.push(`<text class="adv" x="${x + hl + 8}" y="${y - 5}">${fmt(D.battery_i, 3)} kA</text>`); }
+  }
   for (const g of spec.ext_grids) {
     const d = D.ext[Number(g.bus)]; const b = busById(g.bus); if (!d || !b) continue;
     const [x, y] = P(b);
     out.push(`<text class="adv" text-anchor="start"><tspan x="${x + 14}" y="${y - 33}">${n2(d.p)}</tspan><tspan x="${x + 14}" y="${y - 22}">${n2(d.q)}</tspan><tspan x="${x + 14}" y="${y - 11}">${fmt(d.i, 3)}</tspan></text>`);
   }
+}
+function detailMaps(d, spec) {
+  const out = { branches: {}, buses: {}, ext: {}, loads: {}, sgens: {}, battery_i: null, losses: d.losses_mw };
+  [...spec.lines.map((l) => ["line", l.id]), ...spec.trafos.map((t) => ["trafo", t.id])].forEach(([t, id], i) => (out.branches[elemKey(t, id)] = d.branches[i]));
+  for (const b of d.buses) out.buses[b.id] = b;
+  for (const g of d.ext_grids) out.ext[g.bus] = g;
+  for (const l of d.loads || []) out.loads[l.id] = l;
+  for (const g of d.sgens || []) out.sgens[g.id] = g;
+  return out;
 }
 function fitView(svg, spec, pad = 70) {
   const r = svg.getBoundingClientRect(); const W = r.width || 800, H = r.height || 560;
@@ -347,11 +371,13 @@ function drawEditor() {
   const svg = $("#sld");
   const values = {};
   if (S.check && S.check.ok && !S.dirtyCheck) elementList().forEach((e, i) => (values[elemKey(e.type, e.id)] = S.check.loading[i]));
-  renderSLD(svg, S.spec, { view: S.view, sel: S.sel, values, pending: S.pendingBus, battery: S.study.battery !== false ? { bus: S.study.bus } : null });
+  const det = S.netValues && S.check && S.check.ok && !S.dirtyCheck && S.check.detail ? detailMaps(S.check.detail, S.spec) : null;
+  renderSLD(svg, S.spec, { view: S.view, sel: S.sel, values, pending: S.pendingBus, battery: !det && S.study.battery !== false ? { bus: S.study.bus } : null, detail: det });
   const leg = $("#legend");
   const kvs = [...new Set(S.spec.buses.map((b) => b.vn_kv))].sort((a, b) => b - a);
   leg.innerHTML = "";
-  if (Object.keys(values).length) {
+  if (det) leg.append(h("span", {}, "Rated power, no battery · Branch ends and loads: P [MW] · Q [Mvar] · I [kA] · Bus boxes: U [kV] · u [pu] · angle [°]"));
+  else if (Object.keys(values).length) {
     leg.append(h("span", {}, "Loading at rated power"), h("span", { class: "heatbar", style: { background: heatGradient() } }), h("span", { class: "mono" }, "0 → 100 %"));
   } else {
     for (const kv of kvs) { const s = h("span", {}); const sw = h("span", { class: "sw" }); sw.style.background = voltColor(kv); s.append(sw, `${fmt(kv, kv < 1 ? 2 : 0)} kV`); leg.append(s); }
@@ -691,8 +717,10 @@ function addRow(kind) {
 // ============================================================ network lifecycle
 let saveT = null;
 function saveSpec() { clearTimeout(saveT); saveT = setTimeout(() => store.set("spec", S.spec), 300); }
+let recheckT = null;
 function changed(o = {}) {
   S.dirtyCheck = true; S.dirty = true; saveSpec(); updateNetHeader();
+  if (S.netValues && engine && engine.ready) { clearTimeout(recheckT); recheckT = setTimeout(() => checkNetwork(true), 400); }
   if (S.netView === "tables") renderTables(); else drawEditor();
   renderInspector(); syncStudyForm();
 }
@@ -1192,7 +1220,9 @@ function mapCard(r, opts = {}) {
     els.forEach((e, i) => (out.branches[elemKey(e.type, e.id)] = d.branches[i]));
     for (const b of d.buses) out.buses[b.id] = b;
     for (const g of d.ext_grids) out.ext[g.bus] = g;
-    out.losses = d.losses_mw; return out;
+    out.loads = {}; for (const l of d.loads || []) out.loads[l.id] = l;
+    out.sgens = {}; for (const g of d.sgens || []) out.sgens[g.id] = g;
+    out.battery_i = d.battery_i; out.losses = d.losses_mw; return out;
   };
   const fetchDetail = async () => {
     if (!adv) return;
@@ -1258,7 +1288,7 @@ function mapCard(r, opts = {}) {
   const sub = r ? "Starts at the busiest hour on the battery’s path." : "Starts at the hour of the highest loading.";
   card.append(h("div", { class: "chart-title" }, h("h3", {}, "Network at a chosen hour"), h("span", { class: "muted" }, sub)), ctl, errNote, wrap,
     h("div", { class: "leg" }, h("span", {}, "Loading"), h("span", { class: "heatbar", style: { background: heatGradient() } }), h("span", { class: "mono" }, "0 → 100 %"),
-      adv ? h("span", {}, "Branch ends: P [MW] · Q [Mvar] · I [kA], positive out of the bus · Bus boxes: U [kV] · u [pu] · angle [°] · External grid: P · Q · I. Drag to pan, scroll to zoom.") : null));
+      adv ? h("span", {}, "Branch ends: P [MW] · Q [Mvar] · I [kA], positive out of the bus · Loads (consumed) and generators (delivered): P · Q · I · Bus boxes: U [kV] · u [pu] · angle [°] · External grid: P · Q · I. Drag to pan, scroll to zoom.") : null));
   requestAnimationFrame(go);
   let lastW = 0;
   const ro = new ResizeObserver(() => { const w = wrap.clientWidth; if (Math.abs(w - lastW) > 4) { lastW = w; view = null; draw(); } }); ro.observe(wrap); charts.push({ destroy: () => ro.disconnect() });
@@ -1382,6 +1412,8 @@ async function boot() {
   $("#file-import").onchange = (ev) => { const f = ev.target.files[0]; if (f) importFile(f); ev.target.value = ""; };
   $("#btn-export").onclick = () => showExport("json");
   $("#btn-check").onclick = () => checkNetwork(false);
+  const nv = $("#nv-toggle"); nv.checked = S.netValues;
+  nv.onchange = async () => { S.netValues = nv.checked; store.set("netValues", S.netValues); if (S.netValues && (!S.check || S.dirtyCheck)) await checkNetwork(true); drawEditor(); };
   buildToolbar(); hookCanvas(); hookModal(); initStudyForm();
   const saved = store.get("spec", null);
   loadSpec(saved && saved.buses && saved.buses.length ? saved : clone(CIGRE));
