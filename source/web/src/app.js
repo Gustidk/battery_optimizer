@@ -1,4 +1,5 @@
 "use strict";
+const BUILD_ID = "/*BUILD_ID*/";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -60,7 +61,7 @@ class Engine {
     this.seq = 0; this.pending = new Map(); this.ready = false; this.failed = null;
     this.readyP = new Promise((res, rej) => { this._res = res; this._rej = rej; });
     try {
-      this.w = new Worker(new URL("worker.js", location.href), { type: "module" });
+      this.w = new Worker(new URL("worker.js?v=" + BUILD_ID, location.href), { type: "module" });
     } catch (e) { this.fail("Your browser could not start a background worker: " + e.message); return; }
     this.w.onmessage = (ev) => this.msg(ev.data);
     this.w.onerror = (ev) => { if (!this.ready) this.fail("The engine could not load (" + (ev.message || "script error") + ")."); };

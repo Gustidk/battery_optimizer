@@ -13,6 +13,9 @@ with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(os.path.join(WEB, "py", "gridbess", fn), f"gridbess/{fn}")
 page = open(os.path.join(WEB, "src", "page.html")).read()
 app = open(os.path.join(WEB, "src", "app.js")).read()
+import hashlib
+h = hashlib.sha256(open(zp, "rb").read() + open(os.path.join(WEB, "src", "worker.js"), "rb").read() + app.encode()).hexdigest()[:10]
+app = app.replace("/*BUILD_ID*/", h)
 app = app.replace("/*CIGRE_JSON*/", "const CIGRE = " + json.dumps(cigre_mv(), separators=(",", ":")) + ";")
 page = page.replace("/*APP_JS*/", app)
 # GitHub Pages / standalone: a full document

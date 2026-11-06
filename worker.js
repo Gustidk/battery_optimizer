@@ -11,7 +11,7 @@ async function boot() {
   postMessage({ type: "boot", stage: "Loading numpy, scipy and solvers" });
   await py.loadPackage(["numpy", "scipy", "highspy", "clarabel"]);
   postMessage({ type: "boot", stage: "Loading the optimisation engine" });
-  const zip = await (await fetch(new URL("./gridbess.zip", import.meta.url))).arrayBuffer();
+  const zip = await (await fetch(new URL("./gridbess.zip" + new URL(import.meta.url).search, import.meta.url))).arrayBuffer();
   py.unpackArchive(new Uint8Array(zip), "zip", { extractDir: "/home/pyodide" });
   py.runPython("import sys; sys.path.insert(0, '/home/pyodide')");
   api = py.pyimport("gridbess.api");
