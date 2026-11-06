@@ -126,6 +126,7 @@ label.f span.u { color: var(--muted); }
 .inspector .head h3 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px; }
 .kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: var(--f-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.vg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .attached { display: flex; flex-direction: column; gap: 4px; }
 .attached button { text-align: left; border: 1px solid var(--line); background: var(--raise); border-radius: 6px; padding: 5px 8px; cursor: pointer; font-size: 12px; display: flex; gap: 8px; align-items: center; }
 .attached button:hover { border-color: var(--muted); }
@@ -170,6 +171,20 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
 .progress .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s; }
 .progress .txt { font-size: 12px; color: var(--ink-2); margin-top: 4px; }
 
+
+.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--ink-2); user-select: none; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch .track { width: 34px; height: 20px; border-radius: 10px; background: var(--line); position: relative; transition: background .15s; flex: none; }
+.switch .track::after { content: ""; position: absolute; left: 3px; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--raise); box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .15s; }
+.switch input:checked + .track { background: var(--accent); }
+.switch input:checked + .track::after { transform: translateX(14px); }
+.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.off-mode .batonly { display: none !important; }
+#b-fields.disabled { opacity: .45; pointer-events: none; }
+.mapwrap.adv { height: 720px; cursor: grab; }
+.mapwrap .zoombar { position: absolute; right: 10px; top: 10px; display: flex; gap: 4px; }
+.sld .adv { font: 400 9.5px var(--f-mono); fill: var(--ink); paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
+.sld .advbox { fill: var(--panel); stroke-width: 1.2; }
 /* ---------- results ---------- */
 .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
@@ -330,9 +345,11 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
         </div>
         <div id="w-status" style="margin-top:10px"></div>
       </div>
-      <div class="card span5">
-        <h3>Battery</h3>
-        <div class="grid2" style="margin-top:10px">
+      <div class="card span5" id="card-battery">
+        <div class="row"><h3>Battery</h3><span class="spacer"></span>
+          <label class="switch"><input type="checkbox" id="b-on" role="switch"><span class="track" aria-hidden="true"></span><span id="b-on-txt">Include a battery</span></label></div>
+        <p class="note" id="b-off-note" hidden style="margin:10px 0 0">No battery: the study runs an ordinary AC load flow for every hour of the period and reports loadings, voltages, losses and the exchange with the transmission grid.</p>
+        <div class="grid2" style="margin-top:10px" id="b-fields">
           <label class="f"><span>Power <span class="u">MW, charge and discharge</span></span><input id="b-mw" type="number" step="0.1" min="0.01"></label>
           <label class="f"><span>Energy <span class="u">MWh</span></span><input id="b-mwh" type="number" step="0.5" min="0.01"></label>
           <label class="f"><span>Charging efficiency <span class="u">%</span></span><input id="b-etac" type="number" step="0.5" min="50" max="100"></label>
@@ -342,7 +359,7 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
         </div>
         <p class="muted" style="font-size:12px;margin:10px 0 0">The battery runs at unity power factor and ends the period with the energy it started with.</p>
       </div>
-      <div class="card span6">
+      <div class="card span6 batonly">
         <h3>What “grid-friendly” means</h3>
         <div class="choice" style="margin-top:10px" id="obj-choice">
           <label><input type="radio" name="obj" value="minmax"><b>Objective 1 · Lower the average peak</b><small>Minimise the mean of every line’s and transformer’s highest loading in the period (LP).</small></label>
@@ -353,7 +370,7 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
           <label class="f">Weight on transformers<input id="o-wt" type="number" step="0.5" min="0"></label>
         </div>
       </div>
-      <div class="card span6">
+      <div class="card span6 batonly">
         <h3>How the grid’s response is modelled</h3>
         <div class="choice" style="margin-top:10px" id="model-choice">
           <label><input type="radio" name="model" value="tangent"><b>Sensitivity at the peak hour</b><small>Fastest. One linear sensitivity per element, measured with AC load flows in the busiest hour.</small></label>
@@ -372,7 +389,7 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
       </div>
       <div class="card span12">
         <div class="runbar">
-          <div class="seg" role="group" aria-label="What to run">
+          <div class="seg batonly" role="group" aria-label="What to run">
             <button id="r-one" aria-pressed="true">One placement</button>
             <button id="r-all" aria-pressed="false">Compare all placements</button>
           </div>
@@ -413,6 +430,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
       <ul>
         <li>One battery at a time, unity power factor, hourly steps.</li>
         <li>Fixed topology and transformer taps over the period. Loads are constant power.</li>
+        <li>Transformer vector groups (for example Dyn11) enter as their phase shift, clock number × 30°. In a balanced load flow this only matters for transformers in parallel or in a ring, and those must share the same clock number. Winding type and neutral grounding affect the zero-sequence system, which is not modelled.</li>
         <li>Supported elements: buses, external grids, lines, two-winding transformers, line switches, shunts, loads and static generators (PV and wind).</li>
         <li>Thermal loading is current relative to the line’s <code>max_i_ka</code> or the transformer’s rated current, as in pandapower.</li>
       </ul>
@@ -538,14 +556,14 @@ function startEngine() {
 const DEFAULT_STUDY = {
   place: "Aarhus", lat: 56.15, lon: 10.21, start: "2025-01-13", days: 7,
   mw: 4, mwh: 16, eta_c: 95, eta_d: 95, soc: 50, bus: 8,
-  objective: "minmax", model: "piecewise", wl: 1, wt: 1, probe: 2, levels: 9, mode: "one",
+  objective: "minmax", model: "piecewise", wl: 1, wt: 1, probe: 2, levels: 9, mode: "one", battery: true,
 };
 const PLACES = { Aarhus: [56.15, 10.21], "Copenhagen": [55.68, 12.57], Odense: [55.40, 10.39], Aalborg: [57.05, 9.92], Esbjerg: [55.48, 8.45], Custom: null };
 const S = {
   spec: null, sel: null, tool: "select", pendingBus: null,
   view: { tx: 0, ty: 0, k: 1 }, netView: "diagram", tableTab: "buses",
   check: null, study: { ...DEFAULT_STUDY, ...store.get("study", {}) },
-  weather: null, results: null, running: false, dirty: true,
+  weather: null, results: null, running: false, dirty: true, advanced: store.get("advanced", false),
 };
 const U = 70; // px per diagram unit
 
@@ -558,6 +576,7 @@ function ensureIds(spec) {
   spec.shunts.forEach((e, i) => (e.id ??= i));
   spec.loads.forEach((e, i) => (e.id ??= i));
   spec.sgens.forEach((e, i) => (e.id ??= i));
+  for (const t of spec.trafos) if (!vgParse(t.vector_group)) { const p = vgOf(t); t.vector_group = vgName(p); t.shift_degree = p.k * 30; }
   spec.profiles = spec.profiles || clone(DEFAULT_PROFILES);
   for (const [k, v] of Object.entries(DEFAULT_PROFILES)) if (!spec.profiles[k]) spec.profiles[k] = v.slice();
   return spec;
@@ -630,19 +649,20 @@ const ICON = {
   load: '<path d="M12 3v10" stroke="currentColor" stroke-width="1.8"/><path d="M6.5 12h11L12 20z" fill="currentColor"/>',
   pv: '<rect x="4" y="6" width="16" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 12h16M9.3 6v12M14.6 6v12" stroke="currentColor" stroke-width="1.1"/>',
   wind: '<path d="M12 11v10" stroke="currentColor" stroke-width="1.8"/><path d="M12 11l1-8M12 11l7 4M12 11l-7 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="11" r="1.6" fill="currentColor"/>',
+  gen: '<circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M7.5 12q2.25-4 4.5 0t4.5 0" fill="none" stroke="currentColor" stroke-width="1.6"/>',
   ext: '<rect x="5" y="5" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M5 12L12 5M5 19L19 5M12 19l7-7" stroke="currentColor" stroke-width="1.2"/>',
   del: '<path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>',
 };
 const TOOLS = [
   ["select", "Select and move (Esc)"], "-", ["bus", "Add bus: click on the canvas"], ["line", "Add line: click two buses"],
   ["trafo", "Add transformer: click HV bus, then LV bus"], "-", ["load", "Add load: click a bus"], ["pv", "Add PV: click a bus"],
-  ["wind", "Add wind turbine: click a bus"], ["ext", "Add external grid (slack): click a bus"], "-", ["del", "Delete the selected element (Del)"],
+  ["wind", "Add wind turbine: click a bus"], ["gen", "Add generator with constant output: click a bus"], ["ext", "Add external grid (slack): click a bus"], "-", ["del", "Delete the selected element (Del)"],
 ];
 const HINTS = {
   select: "Drag buses to move them. Scroll or pinch to zoom, drag the background to pan.",
   bus: "Click on the canvas to place a bus.", line: "Click the first bus, then the second.",
   trafo: "Click the high-voltage bus, then the low-voltage bus.", load: "Click a bus to add a load.",
-  pv: "Click a bus to add a PV plant.", wind: "Click a bus to add a wind turbine.", ext: "Click a bus to connect it to the external grid.",
+  pv: "Click a bus to add a PV plant.", wind: "Click a bus to add a wind turbine.", gen: "Click a bus to add a generator with constant output.", ext: "Click a bus to connect it to the external grid.",
 };
 function voltColor(kv) { return kv >= 60 ? cssVar("--hv") : kv >= 1 ? cssVar("--mv") : cssVar("--lv"); }
 
@@ -684,6 +704,7 @@ function renderSLD(svg, spec, opts) {
       const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
       out.push(`<circle cx="${mx - ux * 5}" cy="${my - uy * 5}" r="8" fill="${cssVar("--panel")}" stroke="${voltColor(A.vn_kv)}" stroke-width="1.8"/>`);
       out.push(`<circle cx="${mx + ux * 5}" cy="${my + uy * 5}" r="8" fill="none" stroke="${voltColor(B.vn_kv)}" stroke-width="1.8"/>`);
+      if (!hasVals && k > 0.6) out.push(`<text class="lbl kv" x="${mx + 14}" y="${my + 4}">${esc(vgName(vgOf(e)))}</text>`);
     }
     if (hasVals && v != null && opts.labels !== false && L > 34) {
       const mx = (x1 + x2) / 2 + (kind === "trafo" ? 14 : 6), my = (y1 + y2) / 2 + (kind === "trafo" ? 0 : -3);
@@ -694,10 +715,11 @@ function renderSLD(svg, spec, opts) {
   for (const l of spec.lines) drawBranch("line", l, l.from_bus, l.to_bus);
   for (const t of spec.trafos) drawBranch("trafo", t, t.hv_bus, t.lv_bus);
   // buses + attachments
+  const hlOf = new Map(); const late = [];
   for (const b of spec.buses) {
     const [x, y] = P(b); const att = attach.get(b.id) || [];
     const sz = Math.min(1, Math.max(0.5, k * 1.1));
-    const hl = Math.max(20, 10 + att.length * 13) * sz;
+    const hl = Math.max(20, 10 + att.length * 13) * sz; hlOf.set(b.id, hl);
     const col = voltColor(b.vn_kv);
     if (isSel("bus", b.id) || (opts.pending === b.id)) out.push(`<line class="sel" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16" stroke-linecap="round"/>`);
     out.push(`<line class="busbar" x1="${x - hl}" y1="${y}" x2="${x + hl}" y2="${y}" stroke="${col}" stroke-width="5"/>`);
@@ -706,6 +728,8 @@ function renderSLD(svg, spec, opts) {
       const c = sel ? accent : ink2;
       if (a.kind === "load") {
         out.push(`<path d="M${ox} ${y + 2}v14" stroke="${c}" stroke-width="1.4"/><path d="M${ox - 4.5} ${y + 15}h9l-4.5 7z" fill="${c}"/>`);
+      } else if ((a.e.type || "").toUpperCase() === "CONST") {
+        out.push(`<path d="M${ox} ${y + 2}v8" stroke="${c}" stroke-width="1.4"/><circle cx="${ox}" cy="${y + 17}" r="6.5" fill="${cssVar("--panel")}" stroke="${c}" stroke-width="1.4"/><path d="M${ox - 3.6} ${y + 17}q1.8-3.2 3.6 0t3.6 0" fill="none" stroke="${c}" stroke-width="1.3"/>`);
       } else if ((a.e.type || "").toUpperCase() === "WP") {
         out.push(`<path d="M${ox} ${y + 2}v8" stroke="${c}" stroke-width="1.4"/><circle cx="${ox}" cy="${y + 17}" r="6.5" fill="${cssVar("--panel")}" stroke="${c}" stroke-width="1.4"/><path d="M${ox} ${y + 17}l0-5M${ox} ${y + 17}l4.3 2.5M${ox} ${y + 17}l-4.3 2.5" stroke="${c}" stroke-width="1.4"/>`);
       } else {
@@ -729,7 +753,42 @@ function renderSLD(svg, spec, opts) {
     else if (k > 0.75 && !opts.readOnly) out.push(`<text class="lbl kv" x="${x - hl - 6}" y="${y + 16}" text-anchor="end">${fmt(b.vn_kv, b.vn_kv < 1 ? 2 : 0)} kV</text>`);
     out.push(`<line class="hit" data-k="bus:${b.id}" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16"/>`);
   }
+  if (opts.detail) advancedLabels(out, spec, opts.detail, P, hlOf);
   svg.innerHTML = out.join("");
+}
+/** PowerFactory-style result boxes: P [MW], Q [Mvar], I [kA] at both ends of every branch
+    (positive = flowing out of that bus into the branch) and U [kV], u [pu], angle [deg] per bus. */
+function advancedLabels(out, spec, D, P, hlOf) {
+  const n2 = (v) => { const a = Math.abs(v); return fmt(v, a >= 100 ? 0 : a >= 10 ? 1 : 2); };
+  const ends = (kind, e, a, b) => {
+    const d = D.branches[elemKey(kind, e.id)]; const A = busById(a), B = busById(b);
+    if (!d || !A || !B) return;
+    const [x1, y1] = P(A), [x2, y2] = P(B); const L = Math.hypot(x2 - x1, y2 - y1); if (L < 60) return;
+    const sw = kind === "line" ? lineSwitch(e.id) : null;
+    for (const [sx, sy, ex, ey, p, q, i, at] of [[x1, y1, x2, y2, d.p_from, d.q_from, d.i_from, a], [x2, y2, x1, y1, d.p_to, d.q_to, d.i_to, b]]) {
+      if (sw && !sw.closed && Number(sw.bus) === Number(at)) continue;          // open end carries nothing
+      const ux = (ex - sx) / L, uy = (ey - sy) / L, dist = Math.min(L * 0.3, 46);
+      let nx = -uy, ny = ux; if (nx < -0.01 || (Math.abs(nx) <= 0.01 && ny < 0)) { nx = -nx; ny = -ny; }   // right of the line, or below it
+      const px = sx + ux * dist + nx * 8, py = sy + uy * dist + ny * 8;
+      const anchor = nx < -0.3 ? "end" : nx > 0.3 ? "start" : "middle";
+      const top = py - 11 + (ny > 0.5 ? 11 : 0);
+      out.push(`<text class="adv" text-anchor="${anchor}"><tspan x="${px}" y="${top}">${n2(p)}</tspan><tspan x="${px}" y="${top + 11}">${n2(q)}</tspan><tspan x="${px}" y="${top + 22}">${fmt(i, 3)}</tspan></text>`);
+    }
+  };
+  for (const l of spec.lines) ends("line", l, l.from_bus, l.to_bus);
+  for (const t of spec.trafos) ends("trafo", t, t.hv_bus, t.lv_bus);
+  for (const b of spec.buses) {
+    const d = D.buses[b.id]; if (!d) continue;
+    const [x, y] = P(b); const hl = hlOf.get(b.id) || 20;
+    const x1 = x - hl - 8, w = 54;
+    out.push(`<rect class="advbox" x="${x1 - w}" y="${y - 47}" width="${w}" height="37" rx="2" stroke="${voltColor(b.vn_kv)}"/>`);
+    out.push(`<text class="adv" text-anchor="end" style="stroke-width:0"><tspan x="${x1 - 4}" y="${y - 36}">${fmt(d.kv, d.kv >= 100 ? 1 : 2)}</tspan><tspan x="${x1 - 4}" y="${y - 25}">${fmt(d.pu, 3)}</tspan><tspan x="${x1 - 4}" y="${y - 14}">${fmt(d.deg, 1)}</tspan></text>`);
+  }
+  for (const g of spec.ext_grids) {
+    const d = D.ext[Number(g.bus)]; const b = busById(g.bus); if (!d || !b) continue;
+    const [x, y] = P(b);
+    out.push(`<text class="adv" text-anchor="start"><tspan x="${x + 14}" y="${y - 33}">${n2(d.p)}</tspan><tspan x="${x + 14}" y="${y - 22}">${n2(d.q)}</tspan><tspan x="${x + 14}" y="${y - 11}">${fmt(d.i, 3)}</tspan></text>`);
+  }
 }
 function fitView(svg, spec, pad = 70) {
   const r = svg.getBoundingClientRect(); const W = r.width || 800, H = r.height || 560;
@@ -745,7 +804,7 @@ function drawEditor() {
   const svg = $("#sld");
   const values = {};
   if (S.check && S.check.ok && !S.dirtyCheck) elementList().forEach((e, i) => (values[elemKey(e.type, e.id)] = S.check.loading[i]));
-  renderSLD(svg, S.spec, { view: S.view, sel: S.sel, values, pending: S.pendingBus, battery: { bus: S.study.bus } });
+  renderSLD(svg, S.spec, { view: S.view, sel: S.sel, values, pending: S.pendingBus, battery: S.study.battery !== false ? { bus: S.study.bus } : null });
   const leg = $("#legend");
   const kvs = [...new Set(S.spec.buses.map((b) => b.vn_kv))].sort((a, b) => b - a);
   leg.innerHTML = "";
@@ -778,6 +837,7 @@ function addAtBus(kind, busId) {
   if (kind === "load") { const e = { id: nextId(sp.loads), name: `Load ${b.name || b.id}`, bus: b.id, p_mw: 0.5, q_mvar: 0.12, profile: "residential" }; sp.loads.push(e); S.sel = { kind: "load", id: e.id }; }
   if (kind === "pv") { const e = { id: nextId(sp.sgens), name: `PV ${b.name || b.id}`, bus: b.id, p_mw: 0.5, q_mvar: 0, type: "PV" }; sp.sgens.push(e); S.sel = { kind: "sgen", id: e.id }; }
   if (kind === "wind") { const e = { id: nextId(sp.sgens), name: `Wind ${b.name || b.id}`, bus: b.id, p_mw: 2, q_mvar: 0, type: "WP" }; sp.sgens.push(e); S.sel = { kind: "sgen", id: e.id }; }
+  if (kind === "gen") { const e = { id: nextId(sp.sgens), name: `Generator ${b.name || b.id}`, bus: b.id, p_mw: 1, q_mvar: 0, type: "CONST" }; sp.sgens.push(e); S.sel = { kind: "sgen", id: e.id }; }
   if (kind === "ext") {
     if (sp.ext_grids.some((e) => Number(e.bus) === b.id)) { toast("This bus already has an external grid."); return; }
     const e = { id: nextId(sp.ext_grids), bus: b.id, vm_pu: 1.02, va_degree: 0 }; sp.ext_grids.push(e); S.sel = { kind: "ext", id: e.id };
@@ -798,7 +858,7 @@ function addBranch(kind, a, b) {
     const sn = hv.vn_kv >= 60 ? 25 : 0.63;
     const e = { id: nextId(sp.trafos), name: `Trafo ${hv.name || hv.id}–${lv.name || lv.id}`, hv_bus: hv.id, lv_bus: lv.id, sn_mva: sn,
       vn_hv_kv: hv.vn_kv, vn_lv_kv: lv.vn_kv, vk_percent: hv.vn_kv >= 60 ? 12.0 : 6.0, vkr_percent: hv.vn_kv >= 60 ? 0.41 : 1.2,
-      pfe_kw: 0, i0_percent: 0, shift_degree: 30, tap_side: "lv", tap_pos: 0, tap_neutral: 0, tap_step_percent: 1.5, parallel: 1, df: 1 };
+      pfe_kw: 0, i0_percent: 0, vector_group: "Dyn11", shift_degree: 330, tap_side: "lv", tap_pos: 0, tap_neutral: 0, tap_step_percent: 1.5, parallel: 1, df: 1 };
     sp.trafos.push(e); S.sel = { kind: "trafo", id: e.id };
   }
   changed();
@@ -896,16 +956,62 @@ const FIELDS = {
   trafo: [["name", "Name", "text"], ["hv_bus", "HV bus", "bus"], ["lv_bus", "LV bus", "bus"], ["sn_mva", "Rated power", "num", "MVA"],
     ["vn_hv_kv", "Rated voltage HV", "num", "kV"], ["vn_lv_kv", "Rated voltage LV", "num", "kV"], ["vk_percent", "Short-circuit voltage uk", "num", "%"],
     ["vkr_percent", "Resistive part ur", "num", "%"], ["pfe_kw", "Iron losses", "num", "kW"], ["i0_percent", "No-load current", "num", "%"],
-    ["shift_degree", "Phase shift", "num", "°"], ["tap_side", "Tap changer side", "sel", null, [["", "None"], ["hv", "HV"], ["lv", "LV"]]],
+    ["vector_group", "Vector group", "vg"], ["tap_side", "Tap changer side", "sel", null, [["", "None"], ["hv", "HV"], ["lv", "LV"]]],
     ["tap_pos", "Tap position", "num"], ["tap_step_percent", "Tap step", "num", "%"], ["parallel", "Parallel units", "num"]],
   load: [["name", "Name", "text"], ["bus", "Bus", "bus"], ["p_mw", "Active power", "num", "MW"], ["q_mvar", "Reactive power", "num", "Mvar"], ["profile", "Daily profile", "prof"]],
-  sgen: [["name", "Name", "text"], ["bus", "Bus", "bus"], ["p_mw", "Installed power", "num", "MW"], ["type", "Technology", "sel", null, [["PV", "PV (follows irradiance)"], ["WP", "Wind (follows wind speed)"]]], ["q_mvar", "Reactive power at full output", "num", "Mvar"]],
+  sgen: [["name", "Name", "text"], ["bus", "Bus", "bus"], ["p_mw", "Installed power", "num", "MW"], ["type", "Technology", "sel", null, [["PV", "PV (follows irradiance)"], ["WP", "Wind (follows wind speed)"], ["CONST", "Constant output (no weather)"]]], ["q_mvar", "Reactive power at full output", "num", "Mvar"]],
   ext: [["bus", "Bus", "bus"], ["vm_pu", "Voltage setpoint", "num", "pu"], ["va_degree", "Voltage angle", "num", "°"]],
   shunt: [["bus", "Bus", "bus"], ["q_mvar", "Reactive power (+ absorbs)", "num", "Mvar"], ["p_mw", "Active power", "num", "MW"], ["step", "Steps", "num"]],
   switch: [["name", "Name", "text"], ["line", "Line", "line"], ["bus", "At bus", "bus"], ["closed", "State", "sel", null, [["false", "Open"], ["true", "Closed"]]]],
 };
 const KIND_LABEL = { bus: "Bus", line: "Line", trafo: "Transformer", load: "Load", sgen: "Generation", ext: "External grid", shunt: "Shunt", switch: "Switch" };
+// ---- vector groups (IEC 60076-1): HV winding, LV winding, clock number; LV lags HV by clock x 30 deg
+const VG_RE = /^(YN|ZN|D|Y|Z)(yn|zn|d|y|z)(\d{1,2})$/;
+const VG_HV = ["D", "Y", "YN", "Z", "ZN"], VG_LV = ["d", "y", "yn", "z", "zn"];
+const VG_COMMON = ["Dyn11", "Dyn5", "Dyn1", "Dyn7", "Dy11", "Dy5", "Dy1", "YNd11", "YNd5", "YNd1", "Yd11", "Yd5", "Yd1",
+  "Yzn11", "Yzn5", "Yzn1", "YNyn0", "YNyn6", "Yyn0", "Yyn6", "Yy0", "Yy6", "Dd0", "Dd6", "Dzn0", "Dzn6"];
+const vgClass = (w) => (/^[Yy]/.test(w) ? 0 : 1);
+function vgParse(s) {
+  const m = VG_RE.exec(String(s || "").trim()); if (!m) return null;
+  const k = Number(m[3]); if (k > 11) return null;
+  if ((k % 2 === 0) !== (vgClass(m[1]) === vgClass(m[2]))) return null;
+  return { hv: m[1], lv: m[2], k };
+}
+function vgOf(e) {
+  const p = vgParse(e.vector_group); if (p) return p;
+  const k = (((Math.round(Number(e.shift_degree || 0) / 30)) % 12) + 12) % 12;
+  return k % 2 ? { hv: "D", lv: "yn", k } : { hv: "Y", lv: "yn", k };
+}
+const vgName = (p) => `${p.hv}${p.lv}${p.k}`;
+function vgSet(e, p) { e.vector_group = vgName(p); e.shift_degree = p.k * 30; changed({ keepInspector: true }); }
+function vgEditor(e, cls) {
+  const cur = vgOf(e);
+  if (cls) {                                   // compact: one select for tables
+    const sel = h("select", { class: cls });
+    const list = VG_COMMON.includes(vgName(cur)) ? VG_COMMON : [vgName(cur), ...VG_COMMON];
+    for (const v of list) sel.append(h("option", { value: v, selected: v === vgName(cur) ? true : null }, `${v} (${vgParse(v).k * 30}°)`));
+    sel.onchange = () => vgSet(e, vgParse(sel.value));
+    return sel;
+  }
+  const mk = (opts, val, label) => { const s = h("select", { "aria-label": label }); for (const o of opts) s.append(h("option", { value: o, selected: String(o) === String(val) ? true : null }, String(o))); return s; };
+  const sHv = mk(VG_HV, cur.hv, "HV winding"), sLv = mk(VG_LV, cur.lv, "LV winding");
+  const clocks = (hv, lv) => [...Array(12).keys()].filter((k) => (k % 2 === 0) === (vgClass(hv) === vgClass(lv)));
+  const sK = mk(clocks(cur.hv, cur.lv), cur.k, "Clock number");
+  const upd = () => {
+    const hv = sHv.value, lv = sLv.value; let k = Number(sK.value);
+    if (!clocks(hv, lv).includes(k)) k = (k + 1) % 12;          // keep the nearest valid clock number
+    vgSet(e, { hv, lv, k });
+  };
+  sHv.onchange = upd; sLv.onchange = upd; sK.onchange = upd;
+  const wrap = h("div", { class: "vg" },
+    h("label", { class: "f" }, h("span", {}, "HV winding"), sHv),
+    h("label", { class: "f" }, h("span", {}, "LV winding"), sLv),
+    h("label", { class: "f" }, h("span", {}, "Clock"), sK));
+  return h("div", {}, wrap, h("div", { class: "muted", style: { fontSize: "12px", marginTop: "4px" } },
+    h("b", { class: "mono", style: { color: "var(--ink)" } }, vgName(cur)), ` · LV lags HV by ${cur.k * 30}°`));
+}
 function fieldInput(kind, e, f, cls) {
+  if (f[2] === "vg") return vgEditor(e, cls);
   const [key, , type, , opts] = f; let el;
   const onChange = (v) => {
     if (type === "num" || type === "bus" || type === "line") { const n = Number(v); if (!isFinite(n)) return; e[key] = n; }
@@ -915,7 +1021,7 @@ function fieldInput(kind, e, f, cls) {
     changed({ keepInspector: true });
   };
   if (type === "text") el = h("input", { class: cls, type: "text", value: e[key] ?? "" });
-  else if (type === "num") el = h("input", { class: cls, type: "number", step: "any", value: e[key] ?? 0 });
+  else if (type === "num") el = h("input", { class: cls, type: "number", step: "any", value: Number(Number(e[key] ?? 0).toPrecision(8)) });
   else {
     const list = type === "bus" ? BUS_OPTS() : type === "prof" ? PROFILE_OPTS().map((p) => [p, p]) : type === "line" ? S.spec.lines.map((l) => [l.id, l.name || `Line ${l.id}`]) : opts;
     el = h("select", { class: cls });
@@ -934,8 +1040,11 @@ function renderInspector() {
     const name = h("input", { type: "text", value: sp.name || "" }); name.onchange = () => { sp.name = name.value; changed({ keepInspector: true }); };
     box.append(h("label", { class: "f" }, "Network name", name));
     const dl = h("dl", { class: "kv" });
-    const tl = sp.loads.reduce((a, l) => a + Number(l.p_mw || 0), 0), pv = sp.sgens.filter((g) => g.type !== "WP").reduce((a, g) => a + Number(g.p_mw), 0), wp = sp.sgens.filter((g) => g.type === "WP").reduce((a, g) => a + Number(g.p_mw), 0);
-    for (const [k, v] of [["Buses", sp.buses.length], ["Lines", sp.lines.length], ["Transformers", sp.trafos.length], ["Rated load", fmt(tl, 2) + " MW"], ["PV", fmt(pv, 2) + " MW"], ["Wind", fmt(wp, 2) + " MW"]]) dl.append(h("dt", {}, k), h("dd", {}, String(v)));
+    const tl = sp.loads.reduce((a, l) => a + Number(l.p_mw || 0), 0);
+    const gsum = (t) => sp.sgens.filter((g) => String(g.type || "PV").toUpperCase() === t).reduce((a, g) => a + Number(g.p_mw), 0);
+    const rows = [["Buses", sp.buses.length], ["Lines", sp.lines.length], ["Transformers", sp.trafos.length], ["Rated load", fmt(tl, 2) + " MW"], ["PV", fmt(gsum("PV"), 2) + " MW"], ["Wind", fmt(gsum("WP"), 2) + " MW"]];
+    if (gsum("CONST") > 0) rows.push(["Constant generation", fmt(gsum("CONST"), 2) + " MW"]);
+    for (const [k, v] of rows) dl.append(h("dt", {}, k), h("dd", {}, String(v)));
     box.append(dl);
     if (S.check) {
       if (S.check.ok) {
@@ -952,6 +1061,11 @@ function renderInspector() {
   head.append(del); box.append(head);
   const grid = h("div", { class: "grid2" });
   for (const f of FIELDS[s.kind]) {
+    if (f[2] === "vg") {
+      grid.append(h("div", { style: { gridColumn: "1 / -1" } }, h("div", { class: "eyebrow", style: { marginBottom: "4px" } }, "Vector group"), fieldInput(s.kind, e, f),
+        h("p", { class: "muted", style: { fontSize: "11.5px", margin: "6px 0 0" } }, "This balanced load flow uses the phase shift (clock × 30°). It changes results only when transformers run in parallel or in a ring. Winding type and neutral (n) matter for unbalanced faults, which are not computed.")));
+      continue;
+    }
     const lab = h("label", { class: "f", style: f[2] === "text" || f[2] === "bus" || f[2] === "prof" || f[2] === "sel" ? { gridColumn: "1 / -1" } : null }, h("span", {}, f[1], f[3] ? h("span", { class: "u" }, " " + f[3]) : null), fieldInput(s.kind, e, f));
     grid.append(lab);
   }
@@ -1021,7 +1135,7 @@ function addRow(kind) {
   const tpl = {
     bus: () => ({ id: nextId(sp.buses), name: `Bus ${nextId(sp.buses)}`, vn_kv: 20, x: 0, y: (Math.max(0, ...sp.buses.map((b) => b.y || 0)) + 1.25) }),
     line: () => ({ id: nextId(sp.lines), name: `Line ${nextId(sp.lines)}`, from_bus: b0, to_bus: b1, length_km: 1, r_ohm_per_km: 0.501, x_ohm_per_km: 0.716, c_nf_per_km: 151.2, max_i_ka: 0.283, parallel: 1, df: 1, kind: "cable" }),
-    trafo: () => ({ id: nextId(sp.trafos), name: `Trafo ${nextId(sp.trafos)}`, hv_bus: b0, lv_bus: b1, sn_mva: 25, vn_hv_kv: 110, vn_lv_kv: 20, vk_percent: 12, vkr_percent: 0.41, pfe_kw: 0, i0_percent: 0, shift_degree: 30, tap_side: "lv", tap_pos: 0, tap_neutral: 0, tap_step_percent: 1.5, parallel: 1, df: 1 }),
+    trafo: () => ({ id: nextId(sp.trafos), name: `Trafo ${nextId(sp.trafos)}`, hv_bus: b0, lv_bus: b1, sn_mva: 25, vn_hv_kv: 110, vn_lv_kv: 20, vk_percent: 12, vkr_percent: 0.41, pfe_kw: 0, i0_percent: 0, vector_group: "Dyn11", shift_degree: 330, tap_side: "lv", tap_pos: 0, tap_neutral: 0, tap_step_percent: 1.5, parallel: 1, df: 1 }),
     load: () => ({ id: nextId(sp.loads), name: `Load ${nextId(sp.loads)}`, bus: b1, p_mw: 0.5, q_mvar: 0.12, profile: "residential" }),
     sgen: () => ({ id: nextId(sp.sgens), name: `PV ${nextId(sp.sgens)}`, bus: b1, p_mw: 0.5, q_mvar: 0, type: "PV" }),
     ext: () => ({ id: nextId(sp.ext_grids), bus: b0, vm_pu: 1.0, va_degree: 0 }),
@@ -1120,7 +1234,19 @@ function initStudyForm() {
   $("#w-synth").onclick = () => makeSynthetic().catch((e) => renderWeatherStatus(e.message));
   $("#w-csv").onchange = (ev) => { const f = ev.target.files[0]; if (f) uploadCsv(f); ev.target.value = ""; };
   $("#r-run").onclick = runStudy; $("#r-cancel").onclick = cancelRun;
+  const bon = $("#b-on"); bon.checked = S.study.battery !== false;
+  bon.onchange = () => { S.study.battery = bon.checked; saveStudy(); S.dirty = true; applyBatteryMode(); drawEditor(); };
+  applyBatteryMode();
   renderWeatherStatus();
+}
+function applyBatteryMode() {
+  const on = S.study.battery !== false;
+  $("#view-study").classList.toggle("off-mode", !on);
+  $("#b-fields").classList.toggle("disabled", !on);
+  for (const el of $$("#b-fields input, #b-fields select")) el.disabled = !on;
+  $("#b-off-note").hidden = on;
+  $("#r-run").textContent = on ? "Run study" : "Run load flow";
+  updateEstimate();
 }
 function renderProfiles() {
   const root = $("#profiles"); root.innerHTML = "";
@@ -1219,6 +1345,7 @@ function nWorkers() { const c = navigator.hardwareConcurrency || 2; return Math.
 function updateEstimate() {
   if (!S.spec) return;
   const f = periodHours() / 8760; const sizeF = Math.max(1, (S.spec.buses.length / 15) ** 1.6) * Math.max(1, elementList().length / 17);
+  if (S.study.battery === false) { const s0 = 3 * f * sizeF + 1; $("#r-est").textContent = `Load flow for ${periodHours()} hours · estimated time on this device: ${Math.max(1, Math.round(s0))} s`; return; }
   let s = (SEC_PER_YEAR[S.study.model] * f * sizeF + 2);
   const nb = candidates().length;
   if (S.study.mode === "all") s = s * nb / (s * nb > 60 ? nWorkers() : 1) + (s * nb > 60 ? 10 : 0);
@@ -1240,9 +1367,10 @@ async function runStudy() {
   if (S.running) return;
   if (!engine || !engine.ready) { runError("The engine is still starting. Try again in a moment."); return; }
   const s = S.study; $("#r-msg").innerHTML = "";
-  if (!(s.mw > 0 && s.mwh > 0)) return runError("Battery power and energy must be above zero.");
-  if (s.eta_c <= 0 || s.eta_c > 100 || s.eta_d <= 0 || s.eta_d > 100) return runError("Efficiencies must be between 0 and 100 %.");
-  if (s.mode === "one" && !busById(s.bus)) return runError("Choose a bus for the battery.");
+  const withBat = s.battery !== false;
+  if (withBat && !(s.mw > 0 && s.mwh > 0)) return runError("Battery power and energy must be above zero.");
+  if (withBat && (s.eta_c <= 0 || s.eta_c > 100 || s.eta_d <= 0 || s.eta_d > 100)) return runError("Efficiencies must be between 0 and 100 %.");
+  if (withBat && s.mode === "one" && !busById(s.bus)) return runError("Choose a bus for the battery.");
   S.running = true; $("#r-run").disabled = true; $("#r-cancel").hidden = false;
   const t0 = performance.now();
   try {
@@ -1251,10 +1379,13 @@ async function runStudy() {
     const n = periodHours(); const w = S.weather;
     const ghi = JSON.stringify(w.ghi.slice(0, n)), wind = JSON.stringify(w.wind.slice(0, n));
     const spec = JSON.stringify(S.spec), set = JSON.stringify(settingsPayload());
-    setProgress("Running the baseline period", 0.03);
+    setProgress(withBat ? "Running the baseline period" : "Running the load flow", 0.03);
     const base = await engine.json("new_study", [spec, ghi, wind, set], (st, f) => setProgress(st, 0.03 + 0.05 * f));
     const meta = { study: clone(s), weather: { source: w.source, start: w.start, hours: base.hours }, spec: clone(S.spec), started: new Date() };
-    if (s.mode === "one") {
+    if (!withBat) {
+      const lf = await engine.json("loadflow", []);
+      S.results = { kind: "loadflow", base, meta, lf, single: null, ranking: null };
+    } else if (s.mode === "one") {
       const r = await engine.json("run_bus", [s.bus, s.objective, s.model], (st, f) => setProgress(st, 0.1 + 0.85 * f));
       S.results = { kind: "one", base, meta, single: r, ranking: null };
     } else {
@@ -1308,13 +1439,19 @@ function renderResults() {
   const m = R.meta, st = m.study;
   const objTxt = st.objective === "minmax" ? "Objective 1 · lower the average peak" : `Objective 3 · weighted squared peaks (lines ${st.wl}, transformers ${st.wt})`;
   const modelTxt = { tangent: "sensitivity at peak hour", tangent_hourly: "hourly sensitivities", piecewise: "piecewise linear AC model" }[st.model];
+  const advIn = h("input", { type: "checkbox", id: "adv-toggle", role: "switch", checked: S.advanced ? true : null });
+  advIn.onchange = () => { S.advanced = advIn.checked; store.set("advanced", S.advanced); renderResults(); };
+  const advSw = h("label", { class: "switch", title: "Show P, Q and I on every line and transformer end, and voltage on every bus, in the network map" }, advIn, h("span", { class: "track", "aria-hidden": "true" }), "Advanced analysis");
+  const sub = `${m.spec.name || "Network"} · ${m.weather.start} to ${addDays(m.weather.start, Math.ceil(m.weather.hours / 24) - 1)} · ${m.weather.source === "synthetic" ? "synthetic weather" : "measured weather"}`;
+  const title = R.kind === "loadflow" ? "Load flow" : R.kind === "all" ? "Where should the battery go?" : `Battery at ${R.single.bus_name}`;
+  const chips = R.kind === "loadflow" ? [h("span", { class: "chip" }, `${m.weather.hours} hours`), h("span", { class: "chip" }, "No battery")]
+    : [h("span", { class: "chip" }, `${fmt(st.mw, 1)} MW / ${fmt(st.mwh, 1)} MWh`), h("span", { class: "chip" }, objTxt), h("span", { class: "chip" }, modelTxt)];
   const head = h("div", { class: "row" },
-    h("div", { style: { minWidth: 0 } }, h("span", { class: "eyebrow" }, `${m.spec.name || "Network"} · ${m.weather.start} to ${addDays(m.weather.start, Math.ceil(m.weather.hours / 24) - 1)} · ${m.weather.source === "synthetic" ? "synthetic weather" : "measured weather"}`),
-      h("h2", {}, R.kind === "all" ? "Where should the battery go?" : `Battery at ${R.single.bus_name}`)),
-    h("span", { class: "spacer" }),
-    h("span", { class: "chip" }, `${fmt(st.mw, 1)} MW / ${fmt(st.mwh, 1)} MWh`), h("span", { class: "chip" }, objTxt), h("span", { class: "chip" }, modelTxt));
+    h("div", { style: { minWidth: 0 } }, h("span", { class: "eyebrow" }, sub), h("h2", {}, title)),
+    h("span", { class: "spacer" }), ...chips, advSw);
   root.append(head);
   if (S.dirty) root.append(h("div", { class: "note warn" }, "The network or the study settings changed after this run. Run the study again to update the results."));
+  if (R.kind === "loadflow") { renderLoadflow(root); return; }
   if (R.kind === "all") renderRanking(root);
   const detail = h("div", { id: "detail", style: { display: "flex", flexDirection: "column", gap: "14px" } });
   root.append(detail);
@@ -1461,15 +1598,18 @@ function renderDetail(root, r) {
 
   // ----- element peaks (dumbbell) + map
   const grid = h("div", { class: "resgrid" });
-  grid.append(peaksCard(r, els), mapCard(r));
+  if (S.advanced) { root.append(mapCard(r)); grid.append(peaksCard(r, els)); }
+  else grid.append(peaksCard(r, els), mapCard(r));
   root.append(grid);
   const exp = h("div", { class: "row" }, h("button", { class: "btn", onclick: () => showExport("results") }, "Hourly results as CSV"), h("span", { class: "muted", style: { fontSize: "12px" } }, "Every hour: battery power, stored energy and the loading of each line and transformer, with and without battery."));
   root.append(exp);
 }
 function peaksCard(r, els) {
+  const single = !r.peaks_after;
   const card = h("div", { class: "card" });
-  card.append(h("div", { class: "chart-title" }, h("h3", {}, "Peak loading per element")),
-    h("div", { class: "leg", style: { marginTop: "6px" } }, (() => { const a = h("span", {}), b = h("span", {}); const i1 = h("i", { class: "dotk" }), i2 = h("i", { class: "dotk" }); i1.style.background = cssVar("--before"); i2.style.background = cssVar("--after"); a.append(i1, "Without battery"); b.append(i2, "With battery"); return [a, b, h("span", { class: "muted" }, "Bold: on the battery’s path to the grid")]; })()));
+  card.append(...[h("div", { class: "chart-title" }, h("h3", {}, "Peak loading per element"), single ? h("span", { class: "muted" }, "Highest loading of each line and transformer in the period") : null),
+    single ? null : h("div", { class: "leg", style: { marginTop: "6px" } }, (() => { const a = h("span", {}), b = h("span", {}); const i1 = h("i", { class: "dotk" }), i2 = h("i", { class: "dotk" }); i1.style.background = cssVar("--before"); i2.style.background = cssVar("--after"); a.append(i1, "Without battery"); b.append(i2, "With battery"); return [a, b, h("span", { class: "muted" }, "Bold: on the battery’s path to the grid")]; })())].filter(Boolean));
+  if (single) r = { ...r, peaks_after: r.peaks_before, path: r.path || [] };
   const idx = els.map((_, i) => i).sort((a, b) => r.peaks_before[b] - r.peaks_before[a]);
   const W = 560, rowH = 22, padL = 150, padR = 92, H = idx.length * rowH + 28;
   const mx = Math.max(100, ...r.peaks_before, ...r.peaks_after);
@@ -1479,69 +1619,175 @@ function peaksCard(r, els) {
   for (const t of [0, 25, 50, 75, 100]) if (t <= mx) s += `<line x1="${sx(t)}" y1="0" x2="${sx(t)}" y2="${H - 22}" stroke="${cssVar(t === 100 ? "--line" : "--grid")}"/><text x="${sx(t)}" y="${H - 8}" text-anchor="middle" font-size="10" font-family="IBM Plex Mono, monospace" fill="${cssVar("--muted")}">${t}%</text>`;
   idx.forEach((i, row) => {
     const y = 4 + row * rowH + rowH / 2, a = r.peaks_before[i], b = r.peaks_after[i];
-    s += `<g><rect class="row-hit" x="0" y="${y - rowH / 2}" width="${W}" height="${rowH}"/><title>${esc(els[i].name)}: ${fmt(a, 1)} % → ${fmt(b, 1)} %</title>`;
+    s += `<g><rect class="row-hit" x="0" y="${y - rowH / 2}" width="${W}" height="${rowH}"/><title>${esc(els[i].name)}: ${single ? fmt(a, 1) + " %" : `${fmt(a, 1)} % → ${fmt(b, 1)} %`}</title>`;
     s += `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-size="11.5" fill="${cssVar("--ink")}" font-weight="${path.has(i) ? 600 : 400}">${esc(els[i].name.length > 22 ? els[i].name.slice(0, 21) + "…" : els[i].name)}</text>`;
     s += `<line x1="${sx(a)}" y1="${y}" x2="${sx(b)}" y2="${y}" stroke="${cssVar("--line")}" stroke-width="2"/>`;
-    s += `<circle cx="${sx(a)}" cy="${y}" r="4.5" fill="${cssVar("--before")}" stroke="${cssVar("--panel")}" stroke-width="2"/><circle cx="${sx(b)}" cy="${y}" r="4.5" fill="${cssVar("--after")}" stroke="${cssVar("--panel")}" stroke-width="2"/>`;
-    s += `<text x="${W - 4}" y="${y + 4}" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="${cssVar("--ink-2")}">${fmt(a, 1)} → ${fmt(b, 1)}</text></g>`;
+    if (single) s += `<circle cx="${sx(a)}" cy="${y}" r="4.5" fill="${a > 100 ? cssVar("--crit") : cssVar("--after")}" stroke="${cssVar("--panel")}" stroke-width="2"/>`;
+    else s += `<circle cx="${sx(a)}" cy="${y}" r="4.5" fill="${cssVar("--before")}" stroke="${cssVar("--panel")}" stroke-width="2"/><circle cx="${sx(b)}" cy="${y}" r="4.5" fill="${cssVar("--after")}" stroke="${cssVar("--panel")}" stroke-width="2"/>`;
+    s += `<text x="${W - 4}" y="${y + 4}" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="${cssVar("--ink-2")}">${single ? fmt(a, 1) + " %" : `${fmt(a, 1)} → ${fmt(b, 1)}`}</text></g>`;
   });
   const svg = svgEl({ class: "dumb", viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: "max-width:100%;height:auto", role: "img", "aria-label": "Peak loading per element with and without battery" });
   svg.innerHTML = s;
   card.append(h("div", { style: { overflowX: "auto", marginTop: "8px" } }, svg));
   return card;
 }
-function mapCard(r) {
-  const R = S.results, base = R.base, spec = R.meta.spec, els = base.elements, T = base.hours;
+function mapCard(r, opts = {}) {
+  const R = S.results, base = R.base, spec = R.meta.spec, els = base.elements, T = base.hours, adv = S.advanced;
   const card = h("div", { class: "card", style: { display: "flex", flexDirection: "column", gap: "10px" } });
-  let hour = 0; base.loading.forEach((row, i) => { const v = r.path.reduce((a, j) => a + row[j], 0); if (v > r.path.reduce((a, j) => a + base.loading[hour][j], 0)) hour = i; });
-  let mode = "after"; let timer = null;
-  const wrap = h("div", { class: "mapwrap" }); const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("class", "sld"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Network loading at the selected hour"); wrap.append(svg);
+  let hour = opts.hour ?? 0;
+  if (r && opts.hour == null) base.loading.forEach((row, i) => { const v = r.path.reduce((a, j) => a + row[j], 0); if (v > r.path.reduce((a, j) => a + base.loading[hour][j], 0)) hour = i; });
+  let mode = r ? "after" : "before"; let timer = null; let view = null; let detail = null; let want = null; let busy = false;
+  const wrap = h("div", { class: "mapwrap" + (adv ? " adv" : "") });
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("class", "sld"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Network at the selected hour"); wrap.append(svg);
   const slider = h("input", { type: "range", min: 0, max: T - 1, value: hour, "aria-label": "Hour" });
   const lbl = h("span", { class: "mono", style: { minWidth: "150px" } });
-  const seg = h("div", { class: "seg" }); const bB = h("button", { "aria-pressed": "false" }, "Without"), bA = h("button", { "aria-pressed": "true" }, "With battery"); seg.append(bB, bA);
   const play = h("button", { class: "btn" }, "Play");
+  const errNote = h("div", { class: "note warn", hidden: true });
   const t0 = Date.parse(R.meta.weather.start + "T00:00:00Z");
-  const saved = { buses: S.spec }; // renderSLD reads busById from S.spec, so swap temporarily
+  const toDetail = (d, key) => {
+    const out = { key, branches: {}, buses: {}, ext: {} };
+    els.forEach((e, i) => (out.branches[elemKey(e.type, e.id)] = d.branches[i]));
+    for (const b of d.buses) out.buses[b.id] = b;
+    for (const g of d.ext_grids) out.ext[g.bus] = g;
+    out.losses = d.losses_mw; return out;
+  };
+  const fetchDetail = async () => {
+    if (!adv) return;
+    want = `${hour}:${mode}`;
+    if (busy) return; busy = true;
+    try {
+      while (want && (!detail || detail.key !== want)) {
+        const key = want; const [hh, md] = key.split(":"); const i = Number(hh);
+        const d = await engine.json("hour_detail", md === "after" ? [i, r.bus, r.schedule_mw[i]] : [i, null, 0]);
+        detail = toDetail(d, key); draw();
+      }
+    } catch (e) { errNote.textContent = `Detailed values are not available (${e.message}). Run the study again.`; errNote.hidden = false; }
+    finally { busy = false; }
+  };
   const draw = () => {
     const vals = {}; const L = mode === "after" ? r.loading_after[hour] : base.loading[hour];
     els.forEach((e, i) => (vals[elemKey(e.type, e.id)] = L[i]));
-    const keep = S.spec; S.spec = spec;
-    const view = fitView(svg, spec, 46);
+    const keep = S.spec; S.spec = spec;                  // renderSLD looks buses up in S.spec
+    if (!view) {
+      view = fitView(svg, spec, adv ? 70 : 46);
+      if (adv && view.k < 1.55) {                       // zoom in so labels have room; pan to explore
+        const rc = svg.getBoundingClientRect(); const xs = spec.buses.map((b) => b.x * U), ys = spec.buses.map((b) => b.y * U);
+        const k = 1.55, cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+        view = { k, tx: rc.width / 2 - cx * k + 20, ty: 70 - Math.min(...ys) * k };
+      }
+    }
     const vm = {}; const V = mode === "after" ? r.vm_after[hour] : base.vm[hour]; base.buses.forEach((b, i) => (vm[b.id] = V[i]));
-    renderSLD(svg, spec, { view, values: vals, readOnly: true, battery: mode === "after" ? { bus: r.bus, p: r.schedule_mw[hour] } : null, labels: true, showVm: view.k > 0.6, vm });
+    const det = adv && detail && detail.key === `${hour}:${mode}` ? detail : null;
+    renderSLD(svg, spec, { view, values: vals, readOnly: true, battery: mode === "after" ? { bus: r.bus, p: r.schedule_mw[hour] } : null,
+      labels: true, showVm: !adv && view.k > 0.6, vm, detail: det });
     S.spec = keep;
-    lbl.textContent = new Date(t0 + hour * 3600e3).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+    lbl.textContent = new Date(t0 + hour * 3600e3).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" })
+      + (det ? ` · losses ${fmt(det.losses, 3)} MW` : "");
   };
-  void saved;
-  slider.oninput = () => { hour = Number(slider.value); draw(); };
-  bB.onclick = () => { mode = "before"; bB.setAttribute("aria-pressed", "true"); bA.setAttribute("aria-pressed", "false"); draw(); };
-  bA.onclick = () => { mode = "after"; bA.setAttribute("aria-pressed", "true"); bB.setAttribute("aria-pressed", "false"); draw(); };
+  const go = () => { draw(); fetchDetail(); };
+  slider.oninput = () => { hour = Number(slider.value); go(); };
   play.onclick = () => {
     if (timer) { clearInterval(timer); timer = null; play.textContent = "Play"; return; }
     play.textContent = "Pause"; const step = Math.max(1, Math.round(T / 400));
-    timer = setInterval(() => { hour = (hour + step) % T; slider.value = hour; draw(); }, 110);
+    timer = setInterval(() => { hour = (hour + step) % T; slider.value = hour; go(); }, adv ? 220 : 110);
   };
   charts.push({ destroy: () => timer && clearInterval(timer) });
-  card.append(h("div", { class: "chart-title" }, h("h3", {}, "Network at a chosen hour"), h("span", { class: "muted" }, "Starts at the busiest hour on the battery’s path.")),
-    h("div", { class: "mapctl" }, seg, play, slider, lbl), wrap,
-    h("div", { class: "leg" }, h("span", {}, "Loading"), h("span", { class: "heatbar", style: { background: heatGradient() } }), h("span", { class: "mono" }, "0 → 100 %")));
-  requestAnimationFrame(draw);
-  const ro = new ResizeObserver(draw); ro.observe(wrap); charts.push({ destroy: () => ro.disconnect() });
+  const ctl = h("div", { class: "mapctl" });
+  if (r) {
+    const seg = h("div", { class: "seg" }); const bB = h("button", { "aria-pressed": "false" }, "Without"), bA = h("button", { "aria-pressed": "true" }, "With battery"); seg.append(bB, bA);
+    bB.onclick = () => { mode = "before"; bB.setAttribute("aria-pressed", "true"); bA.setAttribute("aria-pressed", "false"); go(); };
+    bA.onclick = () => { mode = "after"; bA.setAttribute("aria-pressed", "true"); bB.setAttribute("aria-pressed", "false"); go(); };
+    ctl.append(seg);
+  }
+  ctl.append(play, slider, lbl);
+  if (adv) {                                            // pan and zoom for reading the labels
+    const zb = h("div", { class: "zoombar" });
+    const zoom = (f, px, py) => { const rc = svg.getBoundingClientRect(); px ??= rc.width / 2; py ??= rc.height / 2; const k = Math.min(5, Math.max(0.15, view.k * f)), g = k / view.k; view = { k, tx: px - (px - view.tx) * g, ty: py - (py - view.ty) * g }; draw(); };
+    zb.append(h("button", { class: "btn", "aria-label": "Zoom in", onclick: () => zoom(1.25) }, "+"), h("button", { class: "btn", "aria-label": "Zoom out", onclick: () => zoom(0.8) }, "−"), h("button", { class: "btn", onclick: () => { view = null; draw(); } }, "Fit"));
+    wrap.append(zb);
+    let drag = null;
+    svg.addEventListener("pointerdown", (ev) => { svg.setPointerCapture(ev.pointerId); drag = { x: ev.clientX, y: ev.clientY, tx: view.tx, ty: view.ty }; wrap.style.cursor = "grabbing"; });
+    svg.addEventListener("pointermove", (ev) => { if (!drag) return; view.tx = drag.tx + ev.clientX - drag.x; view.ty = drag.ty + ev.clientY - drag.y; draw(); });
+    const up = () => { drag = null; wrap.style.cursor = ""; };
+    svg.addEventListener("pointerup", up); svg.addEventListener("pointercancel", up);
+    svg.addEventListener("wheel", (ev) => { ev.preventDefault(); const rc = svg.getBoundingClientRect(); zoom(Math.exp(-ev.deltaY * 0.0015), ev.clientX - rc.left, ev.clientY - rc.top); }, { passive: false });
+  }
+  const sub = r ? "Starts at the busiest hour on the battery’s path." : "Starts at the hour of the highest loading.";
+  card.append(h("div", { class: "chart-title" }, h("h3", {}, "Network at a chosen hour"), h("span", { class: "muted" }, sub)), ctl, errNote, wrap,
+    h("div", { class: "leg" }, h("span", {}, "Loading"), h("span", { class: "heatbar", style: { background: heatGradient() } }), h("span", { class: "mono" }, "0 → 100 %"),
+      adv ? h("span", {}, "Branch ends: P [MW] · Q [Mvar] · I [kA], positive out of the bus · Bus boxes: U [kV] · u [pu] · angle [°] · External grid: P · Q · I. Drag to pan, scroll to zoom.") : null));
+  requestAnimationFrame(go);
+  let lastW = 0;
+  const ro = new ResizeObserver(() => { const w = wrap.clientWidth; if (Math.abs(w - lastW) > 4) { lastW = w; view = null; draw(); } }); ro.observe(wrap); charts.push({ destroy: () => ro.disconnect() });
   return card;
+}
+
+// ============================================================ load flow results (no battery)
+function renderLoadflow(root) {
+  const R = S.results, lf = R.lf, base = R.base, els = base.elements, T = base.hours;
+  const t0 = Date.parse(R.meta.weather.start + "T00:00:00Z");
+  const when = (i) => new Date(t0 + i * 3600e3).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+  const tile = (label, big, unit, note, status) => h("div", { class: "kpi" }, h("div", { class: "eyebrow" }, label),
+    h("div", { class: "big" }, h("span", {}, big), unit ? h("span", { class: "from" }, unit) : null), h("div", { class: "d " + (status || "") }, note));
+  const lossPct = lf.energy_load_mwh ? 100 * lf.energy_losses_mwh / lf.energy_load_mwh : 0;
+  root.append(h("div", { class: "kpis" },
+    tile("Highest loading", fmt(lf.max_loading_pct, 1), "%", `${lf.max_loading_element} · ${when(lf.max_loading_hour)}`, lf.max_loading_pct > 100 ? "bad" : ""),
+    tile("Hours with an overload", String(lf.hours_overloaded), `of ${T}`, lf.elements_overloaded ? `${lf.elements_overloaded} element${lf.elements_overloaded > 1 ? "s" : ""} above 100 %` : "No element above 100 %", lf.hours_overloaded ? "bad" : "good"),
+    tile("Voltage range", `${fmt(lf.vm_min, 3)}–${fmt(lf.vm_max, 3)}`, "pu", `Lowest at ${lf.vm_min_bus}`, lf.vm_min < 0.9 || lf.vm_max > 1.1 ? "bad" : ""),
+    tile("Network losses", fmt(lf.energy_losses_mwh, 1), "MWh", `${fmt(lossPct, 2)} % of the energy delivered to loads`)));
+  root.append(h("div", { class: "row" },
+    h("span", { class: "chip" }, `Exchange with the transmission grid: up to ${fmt(lf.tso_max_import_mw, 2)} MW import${lf.tso_max_export_mw > 0 ? `, ${fmt(lf.tso_max_export_mw, 2)} MW export` : ""}`),
+    h("span", { class: "chip" }, `Average element peak ${fmt(lf.mean_of_max_pct, 2)} %`),
+    h("span", { class: "chip" }, `Solved in ${fmt(lf.timing.loadflow_s, 1)} s`)));
+  // time series
+  const worst = lf.peaks.reduce((b, v, i) => (v > lf.peaks[b] ? i : b), 0);
+  const ts = h("div", { class: "card" });
+  const sel = h("select", { class: "cell", style: { width: "auto" } });
+  els.forEach((e, i) => sel.append(h("option", { value: i, selected: i === worst ? true : null }, e.name)));
+  const readout = h("div", { class: "mono muted", style: { fontSize: "12px", minHeight: "18px" } });
+  ts.append(h("div", { class: "row" }, h("h3", {}, "Over the period"), h("span", { class: "spacer" }), h("label", { class: "row muted", style: { fontSize: "12px" } }, "Element", sel)),
+    h("p", { class: "muted", style: { fontSize: "12px", margin: "4px 0 8px" } }, "Drag across a chart to zoom in, double-click to zoom out."), readout);
+  const c1 = h("div", { class: "chart" }), c2 = h("div", { class: "chart" });
+  ts.append(h("div", { class: "eyebrow", style: { marginTop: "6px" } }, "Loading of the chosen element, %"), c1, h("div", { class: "eyebrow", style: { marginTop: "10px" } }, "Exchange with the transmission grid, MW (+ import)"), c2);
+  root.append(ts);
+  const xs = Float64Array.from({ length: T }, (_, i) => t0 / 1000 + i * 3600);
+  const colA = cssVar("--after"), axisC = cssVar("--muted"), gridC = cssVar("--grid");
+  const axes = () => [{ stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { stroke: gridC, width: 1 }, font: "11px IBM Plex Sans, system-ui" },
+    { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, font: "11px IBM Plex Mono, monospace", size: 46 }];
+  const key = "gfbp-lf-" + Math.random();
+  const upd = (u) => { const i = u.cursor.idx; if (i == null) { readout.textContent = ""; return; } const f = Number(sel.value); readout.textContent = `${when(i)} · ${els[f].name}: ${fmt(base.loading[i][f], 1)} % · grid exchange ${fmt(base.tso_mw[i], 2)} MW · losses ${fmt(base.losses_mw[i], 3)} MW`; };
+  const mk = (el, data, h0) => { const u = new uPlot({ width: Math.max(280, el.clientWidth || root.clientWidth - 40), height: h0, padding: [8, 8, 0, 0], legend: { show: false },
+    cursor: { sync: { key }, drag: { x: true, y: false }, points: { size: 7 } }, scales: { x: { time: true } }, axes: axes(), series: [{}, { stroke: colA, width: 1.8 }], hooks: { setCursor: [upd] } }, data, el); charts.push(u); return u; };
+  const ld = (f) => [xs, Float64Array.from(base.loading, (row) => row[f])];
+  const u1 = mk(c1, ld(worst), 180), u2 = mk(c2, [xs, Float64Array.from(base.tso_mw)], 140);
+  sel.onchange = () => u1.setData(ld(Number(sel.value)));
+  const ro = new ResizeObserver(() => { const w = Math.max(280, c1.clientWidth); [u1, u2].forEach((u) => u.setSize({ width: w, height: u.height })); }); ro.observe(ts); charts.push({ destroy: () => ro.disconnect() });
+  const grid = h("div", { class: "resgrid" });
+  const map = mapCard(null, { hour: lf.max_loading_hour });
+  if (S.advanced) { root.append(map); grid.append(peaksCard({ peaks_before: lf.peaks }, els)); }
+  else grid.append(peaksCard({ peaks_before: lf.peaks }, els), map);
+  root.append(grid);
+  root.append(h("div", { class: "row" }, h("button", { class: "btn", onclick: () => showExport("results") }, "Hourly results as CSV"), h("span", { class: "muted", style: { fontSize: "12px" } }, "Every hour: grid exchange, losses and the loading of each line and transformer.")));
 }
 
 // ============================================================ export modal
 async function showExport(which = "json") {
   const modal = $("#modal"), ta = $("#modal-text"), tabs = $("#modal-tabs"), note = $("#modal-note");
   const opts = [["json", "Network (this tool, JSON)"], ["py", "pandapower Python script"]];
-  if (S.results && S.results.single) opts.push(["results", "Hourly results (CSV)"]);
+  if (S.results && (S.results.single || S.results.kind === "loadflow")) opts.push(["results", "Hourly results (CSV)"]);
   const show = async (k) => {
     tabs.innerHTML = ""; const seg = h("div", { class: "seg" });
     for (const [id, t] of opts) seg.append(h("button", { "aria-pressed": id === k ? "true" : "false", onclick: () => show(id) }, t));
     tabs.append(seg);
     if (k === "json") { ta.value = JSON.stringify(S.spec, null, 1); note.textContent = "Paste into a .json file and load it again with Import JSON."; }
     if (k === "py") { ta.value = "Building…"; note.textContent = "Runs with pandapower (pip install pandapower). Ends with pp.to_json so you can save it in pandapower’s own format."; try { ta.value = await engine.call("export_script", [JSON.stringify(S.spec)]); } catch (e) { ta.value = e.message; } }
-    if (k === "results") {
+    if (k === "results" && S.results.kind === "loadflow") {
+      const R = S.results, b = R.base, els = b.elements; const t0 = Date.parse(R.meta.weather.start + "T00:00:00Z");
+      const head = ["time", "grid_exchange_mw", "losses_mw", ...els.map((e) => `${e.name} %`), ...b.buses.map((x) => `${x.name} pu`)];
+      const rows = [head.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(",")];
+      for (let i = 0; i < b.hours; i++) rows.push([new Date(t0 + i * 3600e3).toISOString().slice(0, 16), b.tso_mw[i], b.losses_mw[i], ...b.loading[i], ...b.vm[i]].join(","));
+      ta.value = rows.join("\n"); note.textContent = "Load flow without battery. Times are local time at the weather location.";
+    } else if (k === "results") {
       const R = S.results, r = R.single, b = R.base, els = b.elements; const t0 = Date.parse(R.meta.weather.start + "T00:00:00Z");
       const head = ["time", "battery_mw", "stored_mwh", ...els.flatMap((e) => [`${e.name} before %`, `${e.name} after %`])];
       const rows = [head.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(",")];
@@ -1587,7 +1833,7 @@ async function boot() {
   for (const b of $$(".tabs button")) b.onclick = () => showView(b.dataset.view);
   $("#vw-diagram").onclick = () => setNetView("diagram"); $("#vw-tables").onclick = () => setNetView("tables");
   $("#btn-new").onclick = () => loadSpec({ name: "New network", f_hz: 50, sn_mva: 1, buses: [{ id: 0, name: "HV grid", vn_kv: 110, x: 0, y: 0 }, { id: 1, name: "MV busbar", vn_kv: 20, x: 0, y: 1.5 }],
-    ext_grids: [{ id: 0, bus: 0, vm_pu: 1.02, va_degree: 0 }], lines: [], trafos: [{ id: 0, name: "Substation", hv_bus: 0, lv_bus: 1, sn_mva: 25, vn_hv_kv: 110, vn_lv_kv: 20, vk_percent: 12, vkr_percent: 0.41, pfe_kw: 0, i0_percent: 0, shift_degree: 30, tap_side: "lv", tap_pos: 0, tap_neutral: 0, tap_step_percent: 1.5, parallel: 1, df: 1 }],
+    ext_grids: [{ id: 0, bus: 0, vm_pu: 1.02, va_degree: 0 }], lines: [], trafos: [{ id: 0, name: "Substation", hv_bus: 0, lv_bus: 1, sn_mva: 25, vn_hv_kv: 110, vn_lv_kv: 20, vk_percent: 12, vkr_percent: 0.41, pfe_kw: 0, i0_percent: 0, vector_group: "Dyn11", shift_degree: 330, tap_side: "lv", tap_pos: 0, tap_neutral: 0, tap_step_percent: 1.5, parallel: 1, df: 1 }],
     loads: [], sgens: [], switches: [], shunts: [] }, { msg: ["", "A substation to start from. Add buses with the bus tool, then connect them with lines."] });
   $("#btn-cigre").onclick = () => loadSpec(clone(CIGRE));
   $("#file-import").onchange = (ev) => { const f = ev.target.files[0]; if (f) importFile(f); ev.target.value = ""; };
@@ -1602,7 +1848,7 @@ async function boot() {
   new MutationObserver(() => { drawEditor(); if (!$("#view-results").hidden) renderResults(); }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
   startEngine();
 }
-const CIGRE = {"name":"CIGRE MV (TB 575) with PV and wind","f_hz":50,"sn_mva":1.0,"buses":[{"id":0,"name":"Node 0 (HV)","vn_kv":110.0,"x":4.6,"y":0},{"id":1,"name":"Node 1","vn_kv":20.0,"x":2.3,"y":1.2},{"id":2,"name":"Node 2","vn_kv":20.0,"x":2.3,"y":2.3},{"id":3,"name":"Node 3","vn_kv":20.0,"x":2.3,"y":3.4},{"id":4,"name":"Node 4","vn_kv":20.0,"x":0.0,"y":4.6},{"id":5,"name":"Node 5","vn_kv":20.0,"x":0.0,"y":5.7},{"id":6,"name":"Node 6","vn_kv":20.0,"x":0.0,"y":6.8},{"id":7,"name":"Node 7","vn_kv":20.0,"x":0.0,"y":7.9},{"id":8,"name":"Node 8","vn_kv":20.0,"x":4.6,"y":4.6},{"id":9,"name":"Node 9","vn_kv":20.0,"x":4.6,"y":5.7},{"id":10,"name":"Node 10","vn_kv":20.0,"x":4.6,"y":6.8},{"id":11,"name":"Node 11","vn_kv":20.0,"x":4.6,"y":7.9},{"id":12,"name":"Node 12","vn_kv":20.0,"x":8.6,"y":1.2},{"id":13,"name":"Node 13","vn_kv":20.0,"x":8.6,"y":2.9},{"id":14,"name":"Node 14","vn_kv":20.0,"x":8.6,"y":4.6}],"ext_grids":[{"bus":0,"vm_pu":1.02,"va_degree":0.0}],"lines":[{"id":0,"name":"Line 1 (1-2)","from_bus":1,"to_bus":2,"length_km":2.82,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":1,"name":"Line 2 (2-3)","from_bus":2,"to_bus":3,"length_km":4.42,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":2,"name":"Line 3 (3-4)","from_bus":3,"to_bus":4,"length_km":0.61,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":3,"name":"Line 4 (4-5)","from_bus":4,"to_bus":5,"length_km":0.56,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":4,"name":"Line 5 (5-6)","from_bus":5,"to_bus":6,"length_km":1.54,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":5,"name":"Line 6 (6-7)","from_bus":6,"to_bus":7,"length_km":0.24,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":6,"name":"Line 7 (7-8)","from_bus":7,"to_bus":8,"length_km":1.67,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":7,"name":"Line 8 (8-9)","from_bus":8,"to_bus":9,"length_km":0.32,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":8,"name":"Line 9 (9-10)","from_bus":9,"to_bus":10,"length_km":0.77,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":9,"name":"Line 10 (10-11)","from_bus":10,"to_bus":11,"length_km":0.33,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":10,"name":"Line 11 (11-4)","from_bus":11,"to_bus":4,"length_km":0.49,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":11,"name":"Line 12 (3-8)","from_bus":3,"to_bus":8,"length_km":1.3,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":12,"name":"Line 13 (12-13)","from_bus":12,"to_bus":13,"length_km":4.89,"r_ohm_per_km":0.51,"x_ohm_per_km":0.366,"c_nf_per_km":10.09678958974984,"max_i_ka":0.21,"parallel":1,"df":1,"kind":"overhead"},{"id":13,"name":"Line 14 (13-14)","from_bus":13,"to_bus":14,"length_km":2.99,"r_ohm_per_km":0.51,"x_ohm_per_km":0.366,"c_nf_per_km":10.09678958974984,"max_i_ka":0.21,"parallel":1,"df":1,"kind":"overhead"},{"id":14,"name":"Line 15 (14-8)","from_bus":14,"to_bus":8,"length_km":2.0,"r_ohm_per_km":0.51,"x_ohm_per_km":0.366,"c_nf_per_km":10.09678958974984,"max_i_ka":0.21,"parallel":1,"df":1,"kind":"overhead"}],"switches":[{"name":"S2","bus":7,"line":5,"closed":false},{"name":"S3","bus":4,"line":10,"closed":false},{"name":"S1","bus":8,"line":14,"closed":false}],"trafos":[{"id":0,"name":"Trafo 0-1","hv_bus":0,"lv_bus":1,"sn_mva":25.0,"vn_hv_kv":110.0,"vn_lv_kv":20.0,"vk_percent":12.000416659433121,"vkr_percent":0.1,"pfe_kw":0.0,"i0_percent":0.0,"shift_degree":30.0,"tap_side":"lv","tap_pos":0,"tap_neutral":0,"tap_step_percent":0.625,"parallel":1,"df":1},{"id":1,"name":"Trafo 0-12","hv_bus":0,"lv_bus":12,"sn_mva":25.0,"vn_hv_kv":110.0,"vn_lv_kv":20.0,"vk_percent":12.000416659433121,"vkr_percent":0.1,"pfe_kw":0.0,"i0_percent":0.0,"shift_degree":30.0,"tap_side":"lv","tap_pos":0,"tap_neutral":0,"tap_step_percent":0.625,"parallel":1,"df":1}],"loads":[{"id":0,"name":"Load N1 Residential","bus":1,"p_mw":14.994,"q_mvar":3.04466,"profile":"residential"},{"id":1,"name":"Load N1 Commercial","bus":1,"p_mw":4.845,"q_mvar":1.59247,"profile":"commercial"},{"id":2,"name":"Load N3 Residential","bus":3,"p_mw":0.27645,"q_mvar":0.06928,"profile":"residential"},{"id":3,"name":"Load N3 Commercial","bus":3,"p_mw":0.22525,"q_mvar":0.1396,"profile":"commercial"},{"id":4,"name":"Load N4 Residential","bus":4,"p_mw":0.43165,"q_mvar":0.10818,"profile":"residential"},{"id":5,"name":"Load N5 Residential","bus":5,"p_mw":0.7275,"q_mvar":0.18233,"profile":"residential"},{"id":6,"name":"Load N6 Residential","bus":6,"p_mw":0.54805,"q_mvar":0.13735,"profile":"residential"},{"id":7,"name":"Load N7 Commercial","bus":7,"p_mw":0.0765,"q_mvar":0.04741,"profile":"commercial"},{"id":8,"name":"Load N8 Residential","bus":8,"p_mw":0.58685,"q_mvar":0.14708,"profile":"residential"},{"id":9,"name":"Load N9 Commercial","bus":9,"p_mw":0.57375,"q_mvar":0.35558,"profile":"commercial"},{"id":10,"name":"Load N10 Residential","bus":10,"p_mw":0.4753,"q_mvar":0.11912,"profile":"residential"},{"id":11,"name":"Load N10 Commercial","bus":10,"p_mw":0.068,"q_mvar":0.04214,"profile":"commercial"},{"id":12,"name":"Load N11 Residential","bus":11,"p_mw":0.3298,"q_mvar":0.08266,"profile":"residential"},{"id":13,"name":"Load N12 Residential","bus":12,"p_mw":14.994,"q_mvar":3.04466,"profile":"residential"},{"id":14,"name":"Load N12 Commercial","bus":12,"p_mw":5.016,"q_mvar":1.64868,"profile":"commercial"},{"id":15,"name":"Load N13 Commercial","bus":13,"p_mw":0.034,"q_mvar":0.02107,"profile":"commercial"},{"id":16,"name":"Load N14 Residential","bus":14,"p_mw":0.20855,"q_mvar":0.05227,"profile":"residential"},{"id":17,"name":"Load N14 Commercial","bus":14,"p_mw":0.3315,"q_mvar":0.20545,"profile":"commercial"}],"sgens":[{"id":0,"name":"PV N3","bus":3,"p_mw":0.02,"q_mvar":0.0,"type":"PV"},{"id":1,"name":"PV N4","bus":4,"p_mw":0.02,"q_mvar":0.0,"type":"PV"},{"id":2,"name":"PV N5","bus":5,"p_mw":0.03,"q_mvar":0.0,"type":"PV"},{"id":3,"name":"PV N6","bus":6,"p_mw":0.03,"q_mvar":0.0,"type":"PV"},{"id":4,"name":"WP N7","bus":7,"p_mw":1.5,"q_mvar":0.0,"type":"WP"},{"id":5,"name":"PV N8","bus":8,"p_mw":0.03,"q_mvar":0.0,"type":"PV"},{"id":6,"name":"PV N9","bus":9,"p_mw":0.03,"q_mvar":0.0,"type":"PV"},{"id":7,"name":"PV N10","bus":10,"p_mw":0.04,"q_mvar":0.0,"type":"PV"},{"id":8,"name":"PV N11","bus":11,"p_mw":0.01,"q_mvar":0.0,"type":"PV"}],"profiles":{"residential":[0.26,0.2,0.19,0.19,0.19,0.23,0.4,0.55,0.62,0.63,0.67,0.6,0.72,0.6,0.52,0.49,0.48,0.6,0.8,0.9,0.8,0.68,0.52,0.38],"commercial":[0.36,0.34,0.29,0.34,0.38,0.47,0.7,0.89,0.99,0.97,1.0,0.8,0.82,0.86,0.87,0.88,0.8,0.55,0.49,0.47,0.42,0.39,0.34,0.33],"flat":[1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0]}};
+const CIGRE = {"name":"CIGRE MV (TB 575) with PV and wind","f_hz":50,"sn_mva":1.0,"buses":[{"id":0,"name":"Node 0 (HV)","vn_kv":110.0,"x":4.6,"y":0},{"id":1,"name":"Node 1","vn_kv":20.0,"x":2.3,"y":1.2},{"id":2,"name":"Node 2","vn_kv":20.0,"x":2.3,"y":2.3},{"id":3,"name":"Node 3","vn_kv":20.0,"x":2.3,"y":3.4},{"id":4,"name":"Node 4","vn_kv":20.0,"x":0.0,"y":4.6},{"id":5,"name":"Node 5","vn_kv":20.0,"x":0.0,"y":5.7},{"id":6,"name":"Node 6","vn_kv":20.0,"x":0.0,"y":6.8},{"id":7,"name":"Node 7","vn_kv":20.0,"x":0.0,"y":7.9},{"id":8,"name":"Node 8","vn_kv":20.0,"x":4.6,"y":4.6},{"id":9,"name":"Node 9","vn_kv":20.0,"x":4.6,"y":5.7},{"id":10,"name":"Node 10","vn_kv":20.0,"x":4.6,"y":6.8},{"id":11,"name":"Node 11","vn_kv":20.0,"x":4.6,"y":7.9},{"id":12,"name":"Node 12","vn_kv":20.0,"x":8.6,"y":1.2},{"id":13,"name":"Node 13","vn_kv":20.0,"x":8.6,"y":2.9},{"id":14,"name":"Node 14","vn_kv":20.0,"x":8.6,"y":4.6}],"ext_grids":[{"bus":0,"vm_pu":1.02,"va_degree":0.0}],"lines":[{"id":0,"name":"Line 1 (1-2)","from_bus":1,"to_bus":2,"length_km":2.82,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":1,"name":"Line 2 (2-3)","from_bus":2,"to_bus":3,"length_km":4.42,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":2,"name":"Line 3 (3-4)","from_bus":3,"to_bus":4,"length_km":0.61,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":3,"name":"Line 4 (4-5)","from_bus":4,"to_bus":5,"length_km":0.56,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":4,"name":"Line 5 (5-6)","from_bus":5,"to_bus":6,"length_km":1.54,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":5,"name":"Line 6 (6-7)","from_bus":6,"to_bus":7,"length_km":0.24,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":6,"name":"Line 7 (7-8)","from_bus":7,"to_bus":8,"length_km":1.67,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":7,"name":"Line 8 (8-9)","from_bus":8,"to_bus":9,"length_km":0.32,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":8,"name":"Line 9 (9-10)","from_bus":9,"to_bus":10,"length_km":0.77,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":9,"name":"Line 10 (10-11)","from_bus":10,"to_bus":11,"length_km":0.33,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":10,"name":"Line 11 (11-4)","from_bus":11,"to_bus":4,"length_km":0.49,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":11,"name":"Line 12 (3-8)","from_bus":3,"to_bus":8,"length_km":1.3,"r_ohm_per_km":0.501,"x_ohm_per_km":0.716,"c_nf_per_km":151.17491424526773,"max_i_ka":0.283,"parallel":1,"df":1,"kind":"cable"},{"id":12,"name":"Line 13 (12-13)","from_bus":12,"to_bus":13,"length_km":4.89,"r_ohm_per_km":0.51,"x_ohm_per_km":0.366,"c_nf_per_km":10.09678958974984,"max_i_ka":0.21,"parallel":1,"df":1,"kind":"overhead"},{"id":13,"name":"Line 14 (13-14)","from_bus":13,"to_bus":14,"length_km":2.99,"r_ohm_per_km":0.51,"x_ohm_per_km":0.366,"c_nf_per_km":10.09678958974984,"max_i_ka":0.21,"parallel":1,"df":1,"kind":"overhead"},{"id":14,"name":"Line 15 (14-8)","from_bus":14,"to_bus":8,"length_km":2.0,"r_ohm_per_km":0.51,"x_ohm_per_km":0.366,"c_nf_per_km":10.09678958974984,"max_i_ka":0.21,"parallel":1,"df":1,"kind":"overhead"}],"switches":[{"name":"S2","bus":7,"line":5,"closed":false},{"name":"S3","bus":4,"line":10,"closed":false},{"name":"S1","bus":8,"line":14,"closed":false}],"trafos":[{"id":0,"name":"Trafo 0-1","hv_bus":0,"lv_bus":1,"sn_mva":25.0,"vn_hv_kv":110.0,"vn_lv_kv":20.0,"vk_percent":12.000416659433121,"vkr_percent":0.1,"pfe_kw":0.0,"i0_percent":0.0,"vector_group":"Dyn1","shift_degree":30.0,"tap_side":"lv","tap_pos":0,"tap_neutral":0,"tap_step_percent":0.625,"parallel":1,"df":1},{"id":1,"name":"Trafo 0-12","hv_bus":0,"lv_bus":12,"sn_mva":25.0,"vn_hv_kv":110.0,"vn_lv_kv":20.0,"vk_percent":12.000416659433121,"vkr_percent":0.1,"pfe_kw":0.0,"i0_percent":0.0,"vector_group":"Dyn1","shift_degree":30.0,"tap_side":"lv","tap_pos":0,"tap_neutral":0,"tap_step_percent":0.625,"parallel":1,"df":1}],"loads":[{"id":0,"name":"Load N1 Residential","bus":1,"p_mw":14.994,"q_mvar":3.04466,"profile":"residential"},{"id":1,"name":"Load N1 Commercial","bus":1,"p_mw":4.845,"q_mvar":1.59247,"profile":"commercial"},{"id":2,"name":"Load N3 Residential","bus":3,"p_mw":0.27645,"q_mvar":0.06928,"profile":"residential"},{"id":3,"name":"Load N3 Commercial","bus":3,"p_mw":0.22525,"q_mvar":0.1396,"profile":"commercial"},{"id":4,"name":"Load N4 Residential","bus":4,"p_mw":0.43165,"q_mvar":0.10818,"profile":"residential"},{"id":5,"name":"Load N5 Residential","bus":5,"p_mw":0.7275,"q_mvar":0.18233,"profile":"residential"},{"id":6,"name":"Load N6 Residential","bus":6,"p_mw":0.54805,"q_mvar":0.13735,"profile":"residential"},{"id":7,"name":"Load N7 Commercial","bus":7,"p_mw":0.0765,"q_mvar":0.04741,"profile":"commercial"},{"id":8,"name":"Load N8 Residential","bus":8,"p_mw":0.58685,"q_mvar":0.14708,"profile":"residential"},{"id":9,"name":"Load N9 Commercial","bus":9,"p_mw":0.57375,"q_mvar":0.35558,"profile":"commercial"},{"id":10,"name":"Load N10 Residential","bus":10,"p_mw":0.4753,"q_mvar":0.11912,"profile":"residential"},{"id":11,"name":"Load N10 Commercial","bus":10,"p_mw":0.068,"q_mvar":0.04214,"profile":"commercial"},{"id":12,"name":"Load N11 Residential","bus":11,"p_mw":0.3298,"q_mvar":0.08266,"profile":"residential"},{"id":13,"name":"Load N12 Residential","bus":12,"p_mw":14.994,"q_mvar":3.04466,"profile":"residential"},{"id":14,"name":"Load N12 Commercial","bus":12,"p_mw":5.016,"q_mvar":1.64868,"profile":"commercial"},{"id":15,"name":"Load N13 Commercial","bus":13,"p_mw":0.034,"q_mvar":0.02107,"profile":"commercial"},{"id":16,"name":"Load N14 Residential","bus":14,"p_mw":0.20855,"q_mvar":0.05227,"profile":"residential"},{"id":17,"name":"Load N14 Commercial","bus":14,"p_mw":0.3315,"q_mvar":0.20545,"profile":"commercial"}],"sgens":[{"id":0,"name":"PV N3","bus":3,"p_mw":0.02,"q_mvar":0.0,"type":"PV"},{"id":1,"name":"PV N4","bus":4,"p_mw":0.02,"q_mvar":0.0,"type":"PV"},{"id":2,"name":"PV N5","bus":5,"p_mw":0.03,"q_mvar":0.0,"type":"PV"},{"id":3,"name":"PV N6","bus":6,"p_mw":0.03,"q_mvar":0.0,"type":"PV"},{"id":4,"name":"WP N7","bus":7,"p_mw":1.5,"q_mvar":0.0,"type":"WP"},{"id":5,"name":"PV N8","bus":8,"p_mw":0.03,"q_mvar":0.0,"type":"PV"},{"id":6,"name":"PV N9","bus":9,"p_mw":0.03,"q_mvar":0.0,"type":"PV"},{"id":7,"name":"PV N10","bus":10,"p_mw":0.04,"q_mvar":0.0,"type":"PV"},{"id":8,"name":"PV N11","bus":11,"p_mw":0.01,"q_mvar":0.0,"type":"PV"}],"profiles":{"residential":[0.26,0.2,0.19,0.19,0.19,0.23,0.4,0.55,0.62,0.63,0.67,0.6,0.72,0.6,0.52,0.49,0.48,0.6,0.8,0.9,0.8,0.68,0.52,0.38],"commercial":[0.36,0.34,0.29,0.34,0.38,0.47,0.7,0.89,0.99,0.97,1.0,0.8,0.82,0.86,0.87,0.88,0.8,0.55,0.49,0.47,0.42,0.39,0.34,0.33],"flat":[1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0]}};
 boot();
 
 </script>

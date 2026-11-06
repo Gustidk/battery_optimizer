@@ -60,7 +60,14 @@ class Study:
         self.load_scale = np.stack(cols, axis=1) if cols else np.zeros((self.T, 0))
         sc = []
         for typ in self.net.sgen_type:
-            sc.append(self.pv if typ == "PV" else self.wp if typ in ("WP", "WIND") else np.ones(self.T))
+            if typ == "PV":
+                sc.append(self.pv)
+            elif typ in ("WP", "WIND"):
+                sc.append(self.wp)
+            elif typ in ("CONST", "CONSTANT"):
+                sc.append(np.ones(self.T))                 # constant output, independent of weather
+            else:
+                raise ValueError(f"Unknown generator type '{typ}'. Use PV, WP (wind) or CONST (constant output).")
         self.sgen_scale = np.stack(sc, axis=1) if sc else np.zeros((self.T, 0))
         self.bat = {"mw": float(self.s["battery_mw"]), "mwh": float(self.s["battery_mwh"]),
                     "eta_c": float(self.s["eta_c"]), "eta_d": float(self.s["eta_d"]),
@@ -206,5 +213,72 @@ class Study:
             "load_mw": (self.load_scale * self.net.load_p).sum(axis=1).round(4).tolist() if len(self.net.loads) else [0.0] * self.T,
             "pv_mw": (self.sgen_scale * self.net.sgen_p)[:, [i for i, t in enumerate(self.net.sgen_type) if t == "PV"]].sum(axis=1).round(4).tolist(),
             "wind_mw": (self.sgen_scale * self.net.sgen_p)[:, [i for i, t in enumerate(self.net.sgen_type) if t in ("WP", "WIND")]].sum(axis=1).round(4).tolist(),
+            "const_mw": (self.sgen_scale * self.net.sgen_p)[:, [i for i, t in enumerate(self.net.sgen_type) if t in ("CONST", "CONSTANT")]].sum(axis=1).round(4).tolist(),
+            "losses_mw": self._losses(base).round(5).tolist(),
             "seconds": base["seconds"],
+        }
+
+    # ------------------------------------------------------------- plain load flow
+    def _losses(self, res):
+        """Active losses per hour [MW] = slack import + generation - load."""
+        return res["slack_p_mw"] + self.P0.sum(axis=1)
+
+    def loadflow(self):
+        """Load flow time series without battery: the same network-wide metrics as a
+        battery run, for using the tool as an ordinary load flow program."""
+        base = self.baseline()
+        L0 = base["loading"]
+        pk = L0.max(axis=0) if L0.size else np.zeros(0)
+        tso = base["slack_p_mw"]
+        load_mwh = float((self.load_scale * self.net.load_p).sum()) if len(self.net.loads) else 0.0
+        loss = self._losses(base)
+        worst = int(np.argmax(pk)) if pk.size else 0
+        return {
+            "kind": "loadflow",
+            "max_loading_pct": float(pk.max()) if pk.size else 0.0,
+            "max_loading_element": self.net.element_names[worst] if pk.size else "",
+            "max_loading_hour": int(np.argmax(L0[:, worst])) if pk.size else 0,
+            "mean_of_max_pct": float(pk.mean()) if pk.size else 0.0,
+            "hours_overloaded": int((L0 > 100).any(axis=1).sum()) if pk.size else 0,
+            "elements_overloaded": int((pk > 100).sum()),
+            "vm_min": float(base["vm_pu"].min()), "vm_max": float(base["vm_pu"].max()),
+            "vm_min_bus": self.net.bus_names[int(np.argmin(base["vm_pu"].min(axis=0)))],
+            "vm_max_bus": self.net.bus_names[int(np.argmax(base["vm_pu"].max(axis=0)))],
+            "tso_max_import_mw": float(tso.max()), "tso_max_export_mw": float(-tso.min()),
+            "tso_std_mw": float(tso.std(ddof=1)) if len(tso) > 1 else 0.0,
+            "energy_load_mwh": load_mwh, "energy_losses_mwh": float(loss.sum()),
+            "peaks": pk.round(4).tolist(),
+            "timing": {"loadflow_s": base["seconds"]},
+        }
+
+    def hour_detail(self, hour, bus_id=None, p_mw=0.0):
+        """Full load flow result for ONE hour (optionally with the battery injecting p_mw
+        at bus_id): bus voltage in kV / pu / degrees and P, Q, I at both ends of every
+        line and transformer, as in a PowerFactory single-line diagram."""
+        net = self.net
+        h = int(hour)
+        P = self.P0[h:h + 1].copy(); Q = self.Q0[h:h + 1].copy()
+        if bus_id is not None:
+            P[0, net.bus_pos[int(bus_id)]] += float(p_mw)
+        r = pf.solve(net, P, Q)
+        V = r["V"][0]
+        sn = net.sn_mva
+        If = net.Yf @ V; It = net.Yt @ V
+        Sf = V[net.f] * np.conj(If) * sn; St = V[net.t] * np.conj(It) * sn
+        Ikf = np.abs(If) * net.i_scale_f; Ikt = np.abs(It) * net.i_scale_t
+        S_calc = V * np.conj(net.Y @ V) * sn
+        ext = S_calc[net.ref] - (P[0, net.ref] + 1j * Q[0, net.ref])
+        loading = r["loading"][0]
+        rd = lambda x, d: float(round(float(x), d))
+        return {
+            "hour": h,
+            "buses": [{"id": bid, "kv": rd(abs(V[i]) * net.vn_kv[i], 3), "pu": rd(abs(V[i]), 5),
+                       "deg": rd(np.degrees(np.angle(V[i])), 3)} for i, bid in enumerate(net.bus_ids)],
+            "branches": [{"p_from": rd(Sf[k].real, 4), "q_from": rd(Sf[k].imag, 4), "i_from": rd(Ikf[k], 5),
+                          "p_to": rd(St[k].real, 4), "q_to": rd(St[k].imag, 4), "i_to": rd(Ikt[k], 5),
+                          "loading": rd(loading[k], 3)} for k in range(len(net.elements))],
+            "ext_grids": [{"bus": net.bus_ids[int(b)], "p": rd(e.real, 4), "q": rd(e.imag, 4),
+                           "i": rd(abs(e) / (np.sqrt(3) * abs(V[int(b)]) * net.vn_kv[int(b)]), 5)}
+                          for b, e in zip(net.ref, ext)],
+            "losses_mw": rd(S_calc.real.sum(), 5),
         }

@@ -121,6 +121,7 @@ label.f span.u { color: var(--muted); }
 .inspector .head h3 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px; }
 .kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: var(--f-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.vg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .attached { display: flex; flex-direction: column; gap: 4px; }
 .attached button { text-align: left; border: 1px solid var(--line); background: var(--raise); border-radius: 6px; padding: 5px 8px; cursor: pointer; font-size: 12px; display: flex; gap: 8px; align-items: center; }
 .attached button:hover { border-color: var(--muted); }
@@ -165,6 +166,20 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
 .progress .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s; }
 .progress .txt { font-size: 12px; color: var(--ink-2); margin-top: 4px; }
 
+
+.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--ink-2); user-select: none; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch .track { width: 34px; height: 20px; border-radius: 10px; background: var(--line); position: relative; transition: background .15s; flex: none; }
+.switch .track::after { content: ""; position: absolute; left: 3px; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--raise); box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .15s; }
+.switch input:checked + .track { background: var(--accent); }
+.switch input:checked + .track::after { transform: translateX(14px); }
+.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.off-mode .batonly { display: none !important; }
+#b-fields.disabled { opacity: .45; pointer-events: none; }
+.mapwrap.adv { height: 720px; cursor: grab; }
+.mapwrap .zoombar { position: absolute; right: 10px; top: 10px; display: flex; gap: 4px; }
+.sld .adv { font: 400 9.5px var(--f-mono); fill: var(--ink); paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
+.sld .advbox { fill: var(--panel); stroke-width: 1.2; }
 /* ---------- results ---------- */
 .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
@@ -323,9 +338,11 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
         </div>
         <div id="w-status" style="margin-top:10px"></div>
       </div>
-      <div class="card span5">
-        <h3>Battery</h3>
-        <div class="grid2" style="margin-top:10px">
+      <div class="card span5" id="card-battery">
+        <div class="row"><h3>Battery</h3><span class="spacer"></span>
+          <label class="switch"><input type="checkbox" id="b-on" role="switch"><span class="track" aria-hidden="true"></span><span id="b-on-txt">Include a battery</span></label></div>
+        <p class="note" id="b-off-note" hidden style="margin:10px 0 0">No battery: the study runs an ordinary AC load flow for every hour of the period and reports loadings, voltages, losses and the exchange with the transmission grid.</p>
+        <div class="grid2" style="margin-top:10px" id="b-fields">
           <label class="f"><span>Power <span class="u">MW, charge and discharge</span></span><input id="b-mw" type="number" step="0.1" min="0.01"></label>
           <label class="f"><span>Energy <span class="u">MWh</span></span><input id="b-mwh" type="number" step="0.5" min="0.01"></label>
           <label class="f"><span>Charging efficiency <span class="u">%</span></span><input id="b-etac" type="number" step="0.5" min="50" max="100"></label>
@@ -335,7 +352,7 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
         </div>
         <p class="muted" style="font-size:12px;margin:10px 0 0">The battery runs at unity power factor and ends the period with the energy it started with.</p>
       </div>
-      <div class="card span6">
+      <div class="card span6 batonly">
         <h3>What “grid-friendly” means</h3>
         <div class="choice" style="margin-top:10px" id="obj-choice">
           <label><input type="radio" name="obj" value="minmax"><b>Objective 1 · Lower the average peak</b><small>Minimise the mean of every line’s and transformer’s highest loading in the period (LP).</small></label>
@@ -346,7 +363,7 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
           <label class="f">Weight on transformers<input id="o-wt" type="number" step="0.5" min="0"></label>
         </div>
       </div>
-      <div class="card span6">
+      <div class="card span6 batonly">
         <h3>How the grid’s response is modelled</h3>
         <div class="choice" style="margin-top:10px" id="model-choice">
           <label><input type="radio" name="model" value="tangent"><b>Sensitivity at the peak hour</b><small>Fastest. One linear sensitivity per element, measured with AC load flows in the busiest hour.</small></label>
@@ -365,7 +382,7 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
       </div>
       <div class="card span12">
         <div class="runbar">
-          <div class="seg" role="group" aria-label="What to run">
+          <div class="seg batonly" role="group" aria-label="What to run">
             <button id="r-one" aria-pressed="true">One placement</button>
             <button id="r-all" aria-pressed="false">Compare all placements</button>
           </div>
@@ -406,6 +423,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
       <ul>
         <li>One battery at a time, unity power factor, hourly steps.</li>
         <li>Fixed topology and transformer taps over the period. Loads are constant power.</li>
+        <li>Transformer vector groups (for example Dyn11) enter as their phase shift, clock number × 30°. In a balanced load flow this only matters for transformers in parallel or in a ring, and those must share the same clock number. Winding type and neutral grounding affect the zero-sequence system, which is not modelled.</li>
         <li>Supported elements: buses, external grids, lines, two-winding transformers, line switches, shunts, loads and static generators (PV and wind).</li>
         <li>Thermal loading is current relative to the line’s <code>max_i_ka</code> or the transformer’s rated current, as in pandapower.</li>
       </ul>

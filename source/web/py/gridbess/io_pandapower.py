@@ -8,6 +8,8 @@ Also writes a network spec back out as a plain pandapower Python script.
 import json
 import math
 
+from .network import NetworkError, vector_group_shift
+
 SUPPORTED = {"bus", "line", "trafo", "load", "sgen", "ext_grid", "switch", "shunt"}
 IGNORED = {"res_", "std_types", "controller", "measurement", "group", "poly_cost", "pwl_cost",
            "bus_geodata", "line_geodata", "version", "format_version", "converged", "OPF_converged",
@@ -162,7 +164,18 @@ def import_pandapower_json(text):
         tct = t.get("tap_changer_type")
         if tct not in (None, "Ratio") and _num(t.get("tap_pos")) != _num(t.get("tap_neutral")):
             warn.append(f"Transformer {t['_index']}: tap changer type '{tct}' is treated as a ratio tap changer.")
-        trafos.append({"id": int(t["_index"]), "name": str(t.get("name") or f"Trafo {t['_index']}"),
+        vg = t.get("vector_group")
+        vg = vg.strip() if isinstance(vg, str) and vg.strip() else None
+        if vg:
+            try:
+                if abs(((_num(t.get("shift_degree")) - vector_group_shift(vg)) + 180) % 360 - 180) > 1e-6:
+                    warn.append(f"Transformer {t['_index']}: vector group {vg} does not match its phase shift of "
+                         f"{_num(t.get('shift_degree')):g} degrees. The phase shift was kept and the vector group dropped.")
+                    vg = None
+            except NetworkError:
+                warn.append(f"Transformer {t['_index']}: '{vg}' is not a recognised vector group and was dropped.")
+                vg = None
+        trafos.append({"id": int(t["_index"]), "vector_group": vg, "name": str(t.get("name") or f"Trafo {t['_index']}"),
                        "hv_bus": R(t["hv_bus"]), "lv_bus": R(t["lv_bus"]), "sn_mva": _num(t.get("sn_mva")),
                        "vn_hv_kv": _num(t.get("vn_hv_kv")), "vn_lv_kv": _num(t.get("vn_lv_kv")),
                        "vk_percent": _num(t.get("vk_percent")), "vkr_percent": _num(t.get("vkr_percent")),
@@ -200,11 +213,11 @@ def import_pandapower_json(text):
         elif "WP" in txt or "WIND" in txt:
             kind = "WP"
         else:
-            kind = "PV"; unknown += 1
+            kind = "CONST"; unknown += 1
         sgens.append({"id": int(s["_index"]), "name": nm, "bus": R(s["bus"]), "p_mw": _num(s.get("p_mw")) * sc,
                       "q_mvar": _num(s.get("q_mvar")) * sc, "type": kind})
     if unknown:
-        warn.append(f"{unknown} static generator(s) had no recognisable type and were set to PV. Check them under Generation.")
+        warn.append(f"{unknown} static generator(s) had no PV or wind type and were set to constant output. Check them under Generation.")
     shunts = [{"bus": R(s["bus"]), "p_mw": _num(s.get("p_mw")), "q_mvar": _num(s.get("q_mvar")),
                "step": _num(s.get("step"), 1.0)}
               for s in T.get("shunt", []) if _on(s) and bus_ok(s["bus"])]
@@ -252,7 +265,8 @@ def to_pandapower_script(spec):
             L.append(f"pp.create_transformer_from_parameters(net, hv_bus={t['hv_bus']}, lv_bus={t['lv_bus']}, sn_mva={t['sn_mva']}, "
                      f"vn_hv_kv={t['vn_hv_kv']}, vn_lv_kv={t['vn_lv_kv']}, vkr_percent={t['vkr_percent']}, vk_percent={t['vk_percent']}, "
                      f"pfe_kw={t.get('pfe_kw', 0)}, i0_percent={t.get('i0_percent', 0)}, shift_degree={t.get('shift_degree', 0)}, "
-                     f"parallel={t.get('parallel', 1)}, name={t.get('name', '')!r}, index={t['id']}{tap})")
+                     + (f"vector_group={t['vector_group']!r}, " if t.get("vector_group") else "")
+                     + f"parallel={t.get('parallel', 1)}, name={t.get('name', '')!r}, index={t['id']}{tap})")
     if spec.get("shunts"):
         L.append("\n# shunts")
         for s in spec["shunts"]:

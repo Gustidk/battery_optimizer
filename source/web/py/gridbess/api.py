@@ -80,3 +80,15 @@ def run_bus(bus, objective, model):
 def run_all(objective, model, buses_json="null"):
     buses = json.loads(buses_json)
     return _out(_state["study"].run_all(objective, model, buses))
+
+
+def loadflow():
+    return _out(_state["study"].loadflow())
+
+
+def hour_detail(hour, bus=None, p_mw=0.0):
+    st = _state["study"]
+    if st is None:
+        raise RuntimeError("Run the study again to see detailed values.")
+    bus = None if bus is None or int(bus) < 0 else int(bus)           # -1 = no battery
+    return _out(st.hour_detail(int(hour), bus, float(p_mw or 0.0)))

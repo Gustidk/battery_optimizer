@@ -14,7 +14,7 @@ Spec layout (all lists of dicts, ids are arbitrary integers):
     lines     {id, name, from_bus, to_bus, length_km, r_ohm_per_km, x_ohm_per_km,
                c_nf_per_km=0, g_us_per_km=0, max_i_ka, parallel=1, df=1}
     trafos    {id, name, hv_bus, lv_bus, sn_mva, vn_hv_kv, vn_lv_kv, vk_percent,
-               vkr_percent, pfe_kw=0, i0_percent=0, shift_degree=0,
+               vkr_percent, pfe_kw=0, i0_percent=0, vector_group=None, shift_degree=0,
                tap_side=None, tap_pos=0, tap_neutral=0, tap_step_percent=0,
                parallel=1, df=1}
     switches  {bus, line, closed}
@@ -24,6 +24,7 @@ Spec layout (all lists of dicts, ids are arbitrary integers):
     f_hz=50, sn_mva=1
 """
 import math
+import re
 from collections import deque
 
 import numpy as np
@@ -31,6 +32,35 @@ import numpy as np
 
 class NetworkError(ValueError):
     """Raised with a message meant for the person who built the network."""
+
+
+# ---------------------------------------------------------------- vector groups
+# IEC 60076-1 notation: HV winding (D, Y, YN, Z, ZN), LV winding (d, y, yn, z, zn),
+# clock number k: the LV voltage lags the HV voltage by k * 30 degrees.
+VG_RE = re.compile(r"^(YN|ZN|D|Y|Z)(yn|zn|d|y|z)(\d{1,2})$")
+
+
+def parse_vector_group(vg):
+    """'Dyn11' -> ('D', 'yn', 11). Raises NetworkError if not a valid vector group."""
+    m = VG_RE.match(str(vg).strip())
+    if not m:
+        raise NetworkError(f"'{vg}' is not a vector group. Write it like Dyn11, YNd5 or Yy0.")
+    hv, lv, k = m.group(1), m.group(2), int(m.group(3))
+    if not 0 <= k <= 11:
+        raise NetworkError(f"Vector group {vg}: the clock number must be 0 to 11.")
+    # star = class 0, delta and zigzag = class 1 (each 30 degrees off a star winding):
+    # same class -> even clock number (Yy0, Dd6, Dz0), different -> odd (Dyn11, Yd5, Yzn1)
+    cls = lambda w: 0 if w[0] in "Yy" else 1
+    even = cls(hv) == cls(lv)
+    if (k % 2 == 0) != even:
+        raise NetworkError(f"Vector group {vg} cannot be built: {hv}{lv} needs an "
+                           f"{'even' if even else 'odd'} clock number.")
+    return hv, lv, k
+
+
+def vector_group_shift(vg):
+    """Phase shift in degrees (pandapower's shift_degree) for a vector group."""
+    return parse_vector_group(vg)[2] * 30.0
 
 
 def _g(d, key, default=None):
@@ -138,6 +168,13 @@ class Network:
             vk = float(tr["vk_percent"]); vkr = float(tr["vkr_percent"])
             if vk <= 0 or vkr < 0 or vkr > vk:
                 raise NetworkError(f"Transformer '{name}': need 0 <= vkr_percent <= vk_percent and vk_percent > 0.")
+            vg = _g(tr, "vector_group", None)
+            if vg:
+                want = vector_group_shift(vg)
+                have = float(_g(tr, "shift_degree", 0))
+                if abs(((have - want) + 180) % 360 - 180) > 1e-6:
+                    raise NetworkError(f"Transformer '{name}': vector group {vg} means a phase shift of "
+                                       f"{want:g} degrees, but the phase shift is set to {have:g}.")
             vn_lv_bus = vn[lb]; vn_hv_bus = vn[hb]
             tap_lv = (vnl / vn_lv_bus) ** 2 * sn
             z = vk / 100 / sn_t * tap_lv; r = vkr / 100 / sn_t * tap_lv
@@ -240,6 +277,15 @@ class Network:
                     sh = math.radians(self._shift[k])
                     ang[v] = ang[u] - sh if u == self.f[k] else ang[u] + sh
                     q.append(v)
+        # every closed loop must add up to zero phase shift; otherwise transformers with
+        # different vector groups run in parallel and drive a short-circuit-like current
+        for k in range(len(self.f)):
+            a, b = int(self.f[k]), int(self.t[k])
+            if np.isnan(ang[a]) or np.isnan(ang[b]):
+                continue
+            d = math.degrees(ang[a] - ang[b]) - self._shift[k]
+            if abs((d + 180) % 360 - 180) > 1e-6:
+                raise NetworkError(self._mismatch_message(k))
         ang = np.nan_to_num(ang)
         V = np.exp(1j * ang)
         V[self.ref] = self.V_ref
@@ -266,6 +312,18 @@ class Network:
         if missing:
             raise NetworkError("These buses are not connected to the external grid: " + ", ".join(missing[:8])
                                + (" ..." if len(missing) > 8 else ""))
+
+    def _mismatch_message(self, k):
+        nl = len(self.lines)
+        tr = [t for t in self.trafos]
+        names = [f"{t.get('name') or 'Trafo ' + str(t['id'])} ({t.get('vector_group') or str(_g(t, 'shift_degree', 0)) + ' deg'})"
+                 for t in tr]
+        what = (f"line '{self.lines[k].get('name') or self.lines[k]['id']}'" if k < nl
+                else f"transformer '{self.trafos[k - nl].get('name') or self.trafos[k - nl]['id']}'")
+        return ("Transformers with different phase shifts run in parallel (the loop closes through "
+                f"{what}). That drives a circulating current like a short circuit. Give parallel "
+                "transformers the same vector group clock number, or open a switch in the loop. "
+                "Transformers: " + ", ".join(names) + ".")
 
     def path_elements(self, bus_id):
         """Branches on the shortest path from the nearest slack to the bus (indices into elements)."""

@@ -32,6 +32,8 @@ const handlers = {
   new_study: ([spec, ghi, wind, settings]) => api.new_study(spec, ghi, wind, settings, progress),
   run_bus: ([bus, obj, model]) => api.run_bus(bus, obj, model),
   run_all: ([obj, model, buses]) => api.run_all(obj, model, buses),
+  loadflow: () => api.loadflow(),
+  hour_detail: ([hour, bus, p]) => api.hour_detail(hour, bus == null ? -1 : bus, p || 0),
 };
 
 onmessage = async (ev) => {

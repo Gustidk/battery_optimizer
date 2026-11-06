@@ -72,7 +72,7 @@ def cigre_mv():
         spec["trafos"].append({
             "id": i, "name": f"Trafo 0-{lv}", "hv_bus": 0, "lv_bus": lv, "sn_mva": 25.0,
             "vn_hv_kv": 110.0, "vn_lv_kv": 20.0, "vk_percent": vk, "vkr_percent": vkr,
-            "pfe_kw": 0.0, "i0_percent": 0.0, "shift_degree": 30.0, "tap_side": "lv",
+            "pfe_kw": 0.0, "i0_percent": 0.0, "vector_group": "Dyn1", "shift_degree": 30.0, "tap_side": "lv",
             "tap_pos": 0, "tap_neutral": 0, "tap_step_percent": 0.625, "parallel": 1, "df": 1,
         })
     return spec
