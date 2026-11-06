@@ -520,7 +520,7 @@ const BUS_OPTS = () => S.spec.buses.map((b) => [b.id, `${b.name || "Bus " + b.id
 const FIELDS = {
   bus: [["name", "Name", "text"], ["vn_kv", "Rated voltage", "num", "kV"]],
   line: [["name", "Name", "text"], ["from_bus", "From bus", "bus"], ["to_bus", "To bus", "bus"], ["length_km", "Length", "num", "km"],
-    ["r_ohm_per_km", "Resistance R′", "num", "Ω/km"], ["x_ohm_per_km", "Reactance X′", "num", "Ω/km"], ["c_nf_per_km", "Capacitance C′", "num", "nF/km"],
+    ["r_ohm_per_km", "Resistance R′", "num", "Ω/km"], ["x_ohm_per_km", "Reactance X′", "num", "Ω/km"], ["c_nf_per_km", "Capacitance C′", "num", "nF/km"], ["c_nf_per_km", "Susceptance B′", "bsus", "µS/km"],
     ["max_i_ka", "Thermal rating", "num", "kA"], ["parallel", "Parallel systems", "num"], ["kind", "Type", "sel", null, [["cable", "Cable"], ["overhead", "Overhead line"]]]],
   trafo: [["name", "Name", "text"], ["hv_bus", "HV bus", "bus"], ["lv_bus", "LV bus", "bus"], ["sn_mva", "Rated power", "num", "MVA"],
     ["vn_hv_kv", "Rated voltage HV", "num", "kV"], ["vn_lv_kv", "Rated voltage LV", "num", "kV"], ["vk_percent", "Short-circuit voltage uk", "num", "%"],
@@ -581,6 +581,12 @@ function vgEditor(e, cls) {
 }
 function fieldInput(kind, e, f, cls) {
   if (f[2] === "vg") return vgEditor(e, cls);
+  if (f[2] === "bsus") {                         // B' = 2*pi*f*C'; stored as C' [nF/km]
+    const w = 2 * Math.PI * Number(S.spec.f_hz || 50) / 1000;   // nF/km -> uS/km
+    const el = h("input", { class: cls, type: "number", step: "any", value: Number((Number(e.c_nf_per_km || 0) * w).toPrecision(8)) });
+    el.addEventListener("change", () => { const v = Number(el.value); if (!isFinite(v) || v < 0) return; e.c_nf_per_km = v / w; changed({ keepInspector: true }); });
+    return el;
+  }
   const [key, , type, , opts] = f; let el;
   const onChange = (v) => {
     if (type === "num" || type === "bus" || type === "line") { const n = Number(v); if (!isFinite(n)) return; e[key] = n; }
