@@ -383,6 +383,23 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
           <label class="f">Power levels (piecewise)<input id="m-levels" type="number" step="2" min="3" max="21"></label>
         </div>
       </div>
+      <div class="card span12 batonly" id="card-price">
+        <div class="row"><h3>Electricity price</h3><span class="spacer"></span>
+          <label class="switch"><input type="checkbox" id="p-on" role="switch"><span class="track" aria-hidden="true"></span><span>Compare with a revenue plan</span></label></div>
+        <p class="sub" style="margin:6px 0 0;font-size:13px">Adds a second plan for the same battery: charge when electricity is cheap and discharge when it is expensive. The results then show where this plan differs from the grid-friendly plan and what grid-friendliness costs in revenue. Spot price only: no tariffs or taxes.</p>
+        <div id="p-fields" hidden>
+          <div class="row" style="margin-top:12px">
+            <label class="btn" for="p-csv">Upload price CSV…</label>
+            <input type="file" id="p-csv" accept=".csv,text/csv" hidden>
+            <span class="muted" style="font-size:12px">From energidataservice.dk: Elspotprices (hourly) or DayAheadPrices (15 minutes). 15-minute prices are averaged per hour.</span>
+          </div>
+          <div class="grid2" style="margin-top:10px">
+            <label class="f"><span>Price area <span class="u">used if the file has several</span></span><select id="p-area"><option value="DK1">DK1 (Jutland, Funen)</option><option value="DK2">DK2 (Zealand)</option></select></label>
+            <label class="f"><span>Wear cost <span class="u">per MWh through the battery, same currency as the prices</span></span><input id="p-wear" type="number" step="10" min="0"></label>
+          </div>
+          <div id="p-status" style="margin-top:10px"></div>
+        </div>
+      </div>
       <div class="card span12">
         <h3>Load profiles</h3>
         <p class="sub" style="margin:6px 0 10px;font-size:13px">Share of each load’s rated power, hour 00 to 23, repeated every day. Defaults: CIGRE TB 575, Fig. 6.4.</p>
@@ -458,7 +475,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "61fd582719";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "f898bba729";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -559,13 +576,14 @@ const DEFAULT_STUDY = {
   place: "Aarhus", lat: 56.15, lon: 10.21, start: "2025-01-13", days: 7,
   mw: 4, mwh: 16, eta_c: 95, eta_d: 95, soc: 50, bus: 8,
   objective: "minmax", model: "piecewise", wl: 1, wt: 1, probe: 2, levels: 9, mode: "one", battery: true,
+  price: false, area: "DK1", wear: 0,
 };
 const PLACES = { Aarhus: [56.15, 10.21], "Copenhagen": [55.68, 12.57], Odense: [55.40, 10.39], Aalborg: [57.05, 9.92], Esbjerg: [55.48, 8.45], Custom: null };
 const S = {
   spec: null, sel: null, tool: "select", pendingBus: null,
   view: { tx: 0, ty: 0, k: 1 }, netView: "diagram", tableTab: "buses",
   check: null, study: { ...DEFAULT_STUDY, ...store.get("study", {}) },
-  weather: null, results: null, running: false, dirty: true, advanced: store.get("advanced", false), netValues: store.get("netValues", false),
+  weather: null, priceData: null, results: null, running: false, dirty: true, advanced: store.get("advanced", false), netValues: store.get("netValues", false),
 };
 const U = 70; // px per diagram unit
 
@@ -1261,6 +1279,7 @@ function initStudyForm() {
   $("#w-quick").onchange = (ev) => { const d = Number(ev.target.value); if (!d) return; S.study.days = d; $("#w-days").value = d; if (d >= 365) { S.study.start = S.study.start.slice(0, 4) + "-01-01"; st.value = S.study.start; } ev.target.value = ""; saveStudy(); renderWeatherStatus(); updateEstimate(); };
   bindNum("#b-mw", "mw"); bindNum("#b-mwh", "mwh"); bindNum("#b-etac", "eta_c"); bindNum("#b-etad", "eta_d"); bindNum("#b-soc", "soc");
   bindNum("#o-wl", "wl"); bindNum("#o-wt", "wt"); bindNum("#m-probe", "probe"); bindNum("#m-levels", "levels");
+  initPriceForm();
   for (const r of $$('input[name="obj"]')) { r.checked = r.value === S.study.objective; r.onchange = () => { S.study.objective = r.value; saveStudy(); $("#weights").hidden = r.value !== "quadratic_peak"; }; }
   $("#weights").hidden = S.study.objective !== "quadratic_peak";
   for (const r of $$('input[name="model"]')) { r.checked = r.value === S.study.model; r.onchange = () => { S.study.model = r.value; saveStudy(); updateEstimate(); }; }
@@ -1313,6 +1332,7 @@ function weatherMatches() {
   return w.start === S.study.start && w.ghi.length >= periodHours() && (w.source !== "synthetic" || (w.lat === S.study.lat && w.lon === S.study.lon));
 }
 function renderWeatherStatus(err) {
+  if (S.study.price && $("#p-status")) renderPriceStatus();      // the price file must cover the same period
   const box = $("#w-status"); box.innerHTML = "";
   if (err) box.append(h("div", { class: "note err", text: err }));
   const w = S.weather;
@@ -1388,6 +1408,84 @@ function updateEstimate() {
   $("#r-est").textContent = `Estimated time on this device: ${s < 60 ? Math.max(1, Math.round(s)) + " s" : Math.round(s / 60) + " min"}` + (S.study.mode === "all" ? ` · ${nb} placements` : "");
 }
 
+
+// ============================================================ electricity price
+// Reads an Energi Data Service CSV (Elspotprices or DayAheadPrices; ';' or ',' separated,
+// decimal comma or point) into hourly prices keyed by local hour, e.g. "2024-03-05T14".
+// 15-minute rows are averaged per hour; a repeated hour (clock change) is averaged too.
+function parsePriceCsv(text) {
+  const lines = text.replace(/^﻿/, "").split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) throw new Error("The file has no data rows.");
+  const delim = (lines[0].match(/;/g) || []).length >= (lines[0].match(/,/g) || []).length ? ";" : ",";
+  const split = (l) => l.split(delim).map((c) => c.trim().replace(/^"|"$/g, ""));
+  const head = split(lines[0]).map((c) => c.toLowerCase());
+  const col = (...names) => { for (const n of names) { const i = head.findIndex((c) => c === n); if (i >= 0) return i; } return -1; };
+  const has = (re) => head.findIndex((c) => re.test(c));
+  let ti = col("hourdk", "timedk"); if (ti < 0) ti = has(/(hour|time).*dk|^time$/); if (ti < 0) ti = 0;
+  let pi = has(/(spotprice|dayaheadprice).*dkk/), cur = "DKK";
+  if (pi < 0) { pi = has(/(spotprice|dayaheadprice).*eur/); cur = "EUR"; }
+  if (pi < 0) { pi = has(/price/); cur = "DKK"; }
+  if (pi < 0) throw new Error("Could not find a price column (SpotPriceDKK or DayAheadPriceDKK).");
+  const ai = has(/pricearea/);
+  const num = (v) => Number(String(v).replace(/\s/g, "").replace(delim === ";" ? /,/ : /$^/, "."));
+  const rows = [];
+  for (const l of lines.slice(1)) {
+    const c = split(l); if (c.length <= Math.max(ti, pi)) continue;
+    const v = num(c[pi]); if (!isFinite(v) || !c[ti]) continue;
+    const key = c[ti].replace(" ", "T").slice(0, 13);
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(key)) continue;
+    rows.push({ key, v, area: ai >= 0 ? c[ai].toUpperCase() : "" });
+  }
+  if (!rows.length) throw new Error("No readable price rows. Expected a time column (HourDK or TimeDK) and a price column.");
+  return { rows, currency: cur, areas: [...new Set(rows.map((r) => r.area).filter(Boolean))] };
+}
+// Hourly price series for the chosen period (naive local time, like the weather).
+function priceSeries() {
+  const d = S.priceData; if (!d) return null;
+  const sums = new Map();
+  for (const r of d.rows) { if (d.areas.length && r.area !== S.study.area) continue; const e = sums.get(r.key) || [0, 0]; e[0] += r.v; e[1]++; sums.set(r.key, e); }
+  if (!sums.size) return { error: `The file has no prices for ${S.study.area}. It contains: ${d.areas.join(", ")}.` };
+  const n = periodHours(), start = new Date(S.study.start + "T00:00:00Z");
+  const out = []; let missing = 0, last = null;
+  for (let i = 0; i < n; i++) {
+    const key = new Date(start.getTime() + i * 3600e3).toISOString().slice(0, 13);
+    const e = sums.get(key);
+    if (e) { last = e[0] / e[1]; out.push(last); } else { missing++; out.push(last); }
+  }
+  if (out[0] == null) { const f = out.find((v) => v != null); if (f == null) return { error: "The file has no prices in the chosen period. Check the start date and length." }; for (let i = 0; out[i] == null; i++) out[i] = f; }
+  return { values: out, missing, currency: d.currency };
+}
+function renderPriceStatus(err) {
+  const box = $("#p-status"); box.innerHTML = "";
+  if (err) { box.append(h("div", { class: "note err", text: err })); return; }
+  if (!S.priceData) { box.append(h("div", { class: "note" }, "No price file loaded yet. Download hourly prices for the same period as the weather from energidataservice.dk and upload the CSV.")); return; }
+  const ps = priceSeries();
+  if (ps.error) { box.append(h("div", { class: "note warn", text: ps.error })); return; }
+  const v = ps.values, mean = v.reduce((a, b) => a + b, 0) / v.length, neg = v.filter((x) => x < 0).length;
+  box.append(h("div", { class: "note" + (ps.missing ? " warn" : "") }, h("b", {}, `Prices in ${ps.currency}/MWh`), ` · ${v.length} hours from ${S.study.start}`,
+    h("br"), `Average ${fmt(mean, 0)} · lowest ${fmt(Math.min(...v), 0)} · highest ${fmt(Math.max(...v), 0)} · ${neg} hours below zero.`,
+    ps.missing ? h("span", {}, h("br"), `${ps.missing} hour(s) were not in the file and repeat the previous price.`) : null));
+}
+function applyPriceMode() {
+  const on = !!S.study.price;
+  $("#p-fields").hidden = !on;
+  $("#p-on").checked = on;
+  if (on) renderPriceStatus();
+}
+function initPriceForm() {
+  const on = $("#p-on"); on.checked = !!S.study.price;
+  on.onchange = () => { S.study.price = on.checked; saveStudy(); S.dirty = true; applyPriceMode(); };
+  const ar = $("#p-area"); ar.value = S.study.area || "DK1";
+  ar.onchange = () => { S.study.area = ar.value; saveStudy(); S.dirty = true; renderPriceStatus(); };
+  bindNum("#p-wear", "wear");
+  $("#p-csv").onchange = async (ev) => {
+    const f = ev.target.files[0]; ev.target.value = ""; if (!f) return;
+    try { S.priceData = parsePriceCsv(await f.text()); S.priceData.name = f.name; S.dirty = true; renderPriceStatus(); toast(`Loaded prices from ${f.name}.`); }
+    catch (e) { renderPriceStatus(e.message); }
+  };
+  applyPriceMode();
+}
+
 // ============================================================ running
 let pool = [];
 function setProgress(stage, frac) {
@@ -1396,7 +1494,7 @@ function setProgress(stage, frac) {
 function settingsPayload() {
   const s = S.study;
   return { battery_mw: s.mw, battery_mwh: s.mwh, eta_c: s.eta_c / 100, eta_d: s.eta_d / 100, soc_init: s.soc / 100, dt_h: 1,
-    probe_mw: s.probe, n_levels: Math.max(3, Math.round(s.levels) | 1), weight_line: s.wl, weight_trafo: s.wt };
+    probe_mw: s.probe, n_levels: Math.max(3, Math.round(s.levels) | 1), weight_line: s.wl, weight_trafo: s.wt, throughput_cost: s.price ? s.wear : 0 };
 }
 function runError(msg) { $("#r-msg").innerHTML = ""; $("#r-msg").append(h("div", { class: "note err", style: { marginTop: "10px" }, text: msg })); }
 async function runStudy() {
@@ -1415,15 +1513,26 @@ async function runStudy() {
     const n = periodHours(); const w = S.weather;
     const ghi = JSON.stringify(w.ghi.slice(0, n)), wind = JSON.stringify(w.wind.slice(0, n));
     const spec = JSON.stringify(S.spec), set = JSON.stringify(settingsPayload());
+    let priceJson = null, priceInfo = null;
+    if (withBat && s.price) {
+      if (!S.priceData) throw new Error("Upload a price file first, or turn the electricity price off.");
+      const ps = priceSeries(); if (ps.error) throw new Error(ps.error);
+      priceJson = JSON.stringify(ps.values); priceInfo = { currency: ps.currency, area: s.area, file: S.priceData.name || "" };
+    }
     setProgress(withBat ? "Running the baseline period" : "Running the load flow", 0.03);
-    const base = await engine.json("new_study", [spec, ghi, wind, set], (st, f) => setProgress(st, 0.03 + 0.05 * f));
-    const meta = { study: clone(s), weather: { source: w.source, start: w.start, hours: base.hours }, spec: clone(S.spec), started: new Date() };
+    const base = await engine.json("new_study", [spec, ghi, wind, set, priceJson], (st, f) => setProgress(st, 0.03 + 0.05 * f));
+    const meta = { study: clone(s), weather: { source: w.source, start: w.start, hours: base.hours }, spec: clone(S.spec), started: new Date(), price: priceInfo };
     if (!withBat) {
       const lf = await engine.json("loadflow", []);
       S.results = { kind: "loadflow", base, meta, lf, single: null, ranking: null };
     } else if (s.mode === "one") {
-      const r = await engine.json("run_bus", [s.bus, s.objective, s.model], (st, f) => setProgress(st, 0.1 + 0.85 * f));
-      S.results = { kind: "one", base, meta, single: r, ranking: null };
+      if (priceJson) {
+        const cmp = await engine.json("compare_bus", [s.bus, s.objective, s.model], (st, f) => setProgress(st, 0.1 + 0.85 * f));
+        S.results = { kind: "one", base, meta, single: cmp.grid_plan, compare: cmp, ranking: null };
+      } else {
+        const r = await engine.json("run_bus", [s.bus, s.objective, s.model], (st, f) => setProgress(st, 0.1 + 0.85 * f));
+        S.results = { kind: "one", base, meta, single: r, ranking: null };
+      }
     } else {
       const buses = candidates().map((b) => b.id);
       const est = SEC_PER_YEAR[s.model] * n / 8760 * buses.length;
@@ -1435,7 +1544,7 @@ async function runStudy() {
       for (let i = 1; i < k; i++) { const e = new Engine(); pool.push(e); engines.push(e); }
       const jobs = parts.map(async (p, i) => {
         const e = engines[i];
-        if (i > 0) { setProgress(`Starting ${k} parallel engines`, 0.08); await e.readyP; await e.json("new_study", [spec, ghi, wind, set]); }
+        if (i > 0) { setProgress(`Starting ${k} parallel engines`, 0.08); await e.readyP; await e.json("new_study", [spec, ghi, wind, set, priceJson]); }
         return e.json("run_all", [s.objective, s.model, JSON.stringify(p)], tick(i));
       });
       const all = (await Promise.all(jobs)).flat();
@@ -1491,8 +1600,97 @@ function renderResults() {
   if (R.kind === "all") renderRanking(root);
   const detail = h("div", { id: "detail", style: { display: "flex", flexDirection: "column", gap: "14px" } });
   root.append(detail);
+  if (R.compare) renderCompare(detail, R.compare);
   if (R.single) renderDetail(detail, R.single);
 }
+
+// ============================================================ revenue plan vs grid-friendly plan
+function renderCompare(root, c) {
+  const R = S.results, base = R.base, st = R.meta.study, cur = R.meta.price ? R.meta.price.currency : "";
+  const x = c.compare, T = base.hours;
+  const colRev = cssVar("--battery"), colGrid = cssVar("--after"), colPrice = cssVar("--ink-2"), axisC = cssVar("--muted"), gridC = cssVar("--grid");
+  const objName = c.grid_objective === "minmax" ? "objective 1" : "objective 3";
+  const card = h("div", { class: "card" });
+  card.append(h("div", { class: "chart-title" }, h("h3", {}, "Revenue plan or grid-friendly plan?"),
+    h("span", { class: "muted" }, `Same battery (${fmt(st.mw, 1)} MW / ${fmt(st.mwh, 1)} MWh) at ${c.bus_name}. The revenue plan follows the spot price only; the grid-friendly plan is ${objName}. Both are checked with the same AC load flow.`)));
+  const kp = (label, big, small, note, cls) => h("div", { class: "kpi" }, h("div", { class: "eyebrow" }, label),
+    h("div", { class: "big" }, h("span", {}, big), small ? h("span", { class: "from" }, small) : null), h("div", { class: "d " + (cls || "") }, note));
+  const gi = x.weighted_overload_grid_plan, ri = x.weighted_overload_revenue_plan, b0 = x.weighted_overload_before;
+  card.append(h("div", { class: "kpis", style: { marginTop: "10px" } },
+    kp("Revenue, revenue plan", `${fmt(x.revenue_revenue_plan, 0)} ${cur}`, "", `grid-friendly plan: ${fmt(x.revenue_grid_plan, 0)} ${cur}`),
+    kp("What grid-friendliness costs", `${fmt(x.revenue_given_up, 0)} ${cur}`, "", `${fmt(x.revenue_given_up_pct, 0)} % of the revenue plan’s income`, x.revenue_given_up > 0 ? "bad" : "good"),
+    kp("Weighted squared peaks", fmt(gi, 0), `revenue plan ${fmt(ri, 0)}`, `no battery ${fmt(b0, 0)} · revenue plan ${fmtSigned(100 * (ri / b0 - 1), 1)} % · grid plan ${fmtSigned(100 * (gi / b0 - 1), 1)} %`, ri > b0 ? "bad" : ""),
+    kp("Hours where they differ", `${x.hours_differ} of ${x.hours}`, `${x.hours_conflict} opposite`, `Opposite = one charges while the other discharges. Correlation ${fmt(x.schedule_correlation, 2)}.`)));
+  // ---- typical day
+  const hrs = Array.from({ length: 24 }, (_, i) => i);
+  const d1 = h("div", { class: "chart" }), d2 = h("div", { class: "chart" });
+  const leg = (items) => h("div", { class: "leg" }, items.map(([col, t]) => { const s = h("span", {}); const i = h("i"); i.style.background = col; s.append(i, t); return s; }));
+  const axes = (unit) => [{ stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { stroke: gridC, width: 1 }, font: "11px IBM Plex Sans, system-ui" },
+    { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, font: "11px IBM Plex Mono, monospace", size: 52, values: (u, v) => v.map((q) => fmt(q, Math.abs(q) < 10 && q % 1 ? 1 : 0) + unit) }];
+  card.append(h("div", { class: "row", style: { marginTop: "14px" } }, h("span", { class: "eyebrow" }, "A typical day: average battery power by hour of day, MW (+ discharge, − charge)"), h("span", { class: "spacer" }),
+      leg([[colRev, "Revenue plan"], [colGrid, "Grid-friendly plan"]])), d1,
+    h("div", { class: "eyebrow", style: { marginTop: "8px" } }, `Average price by hour of day, ${cur}/MWh`), d2);
+  root.append(card);
+  const width = () => Math.max(280, d1.clientWidth || root.clientWidth - 40);
+  const mkDay = (el, series, data, height, unit) => { const u = new uPlot({ width: width(), height, padding: [8, 8, 0, 0], legend: { show: false }, cursor: { points: { size: 7 } }, scales: { x: { time: false } },
+    axes: (() => { const ax = axes(unit); ax[0].values = (u2, v) => v.map((q) => String(q).padStart(2, "0") + ":00"); ax[0].splits = () => [0, 3, 6, 9, 12, 15, 18, 21]; return ax; })(), series: [{}, ...series] }, data, el); charts.push(u); return u; };
+  const uA = mkDay(d1, [{ stroke: colRev, width: 2, paths: uPlot.paths.stepped({ align: 1 }) }, { stroke: colGrid, width: 2, paths: uPlot.paths.stepped({ align: 1 }) }], [hrs, x.schedule_by_hour_revenue, x.schedule_by_hour_grid], 150, "");
+  const uB = mkDay(d2, [{ stroke: colPrice, width: 2, paths: uPlot.paths.stepped({ align: 1 }) }], [hrs, x.price_by_hour], 110, "");
+  // ---- when do they disagree
+  const dc = h("div", {}); const mxd = Math.max(1, ...x.differ_by_hour);
+  const W = 600, H = 120, padL = 30, bw = (W - padL - 6) / 24;
+  let s = "";
+  hrs.forEach((i) => {
+    const hd = (x.differ_by_hour[i] / mxd) * (H - 34), hc = (x.conflict_by_hour[i] / mxd) * (H - 34), xx = padL + i * bw;
+    s += `<g><title>${String(i).padStart(2, "0")}:00 · different mode ${x.differ_by_hour[i]} h · opposite ${x.conflict_by_hour[i]} h</title>`;
+    s += `<rect x="${xx + 2}" y="${H - 20 - hd}" width="${bw - 4}" height="${Math.max(0, hd)}" fill="${cssVar("--before")}" rx="2"/>`;
+    s += `<rect x="${xx + 2}" y="${H - 20 - hc}" width="${bw - 4}" height="${Math.max(0, hc)}" fill="${cssVar("--crit")}" rx="2"/>`;
+    if (i % 3 === 0) s += `<text x="${xx + bw / 2}" y="${H - 6}" text-anchor="middle" font-size="10" font-family="IBM Plex Mono, monospace" fill="${axisC}">${String(i).padStart(2, "0")}</text>`;
+    s += `</g>`;
+  });
+  s += `<text x="${padL - 4}" y="12" text-anchor="end" font-size="10" font-family="IBM Plex Mono, monospace" fill="${axisC}">${mxd}</text><text x="${padL - 4}" y="${H - 20}" text-anchor="end" font-size="10" font-family="IBM Plex Mono, monospace" fill="${axisC}">0</text>`;
+  const svg = svgEl({ viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: "width:100%;max-width:900px;height:auto", role: "img", "aria-label": "Hours where the two plans differ, by hour of day" });
+  svg.innerHTML = s;
+  const top = x.differ_by_hour.map((v, i) => [v, i]).sort((p, q) => q[0] - p[0]).slice(0, 3).filter((p) => p[0] > 0).map((p) => `${String(p[1]).padStart(2, "0")}:00`);
+  const oppTop = x.conflict_by_hour.map((v, i) => [v, i]).sort((p, q) => q[0] - p[0]).filter((p) => p[0] > 0)[0];
+  card.append(h("div", { class: "row", style: { marginTop: "14px" } }, h("span", { class: "eyebrow" }, "When do the plans disagree? Hours per hour of day, over the whole period"), h("span", { class: "spacer" }),
+    leg([[cssVar("--before"), "Different mode (charge, discharge or idle)"], [cssVar("--crit"), "Opposite directions"]])),
+    h("div", { style: { overflowX: "auto" } }, svg),
+    h("p", { class: "muted", style: { fontSize: "12.5px", margin: "6px 0 0" } },
+      top.length ? `They differ most around ${top.join(", ")}.` : "The two plans behave the same in every hour.",
+      oppTop ? ` They point in opposite directions most often at ${String(oppTop[1]).padStart(2, "0")}:00 (${oppTop[0]} hours).` : " They never point in opposite directions."));
+  // ---- hour by hour
+  const t0 = Date.parse(R.meta.weather.start + "T00:00:00Z") / 1000;
+  const xs = Float64Array.from({ length: T }, (_, i) => t0 + i * 3600);
+  const e1 = h("div", { class: "chart" }), e2 = h("div", { class: "chart" });
+  const zoomBtns = h("div", { class: "seg" }); const wholeB = h("button", { "aria-pressed": "true" }, "Whole period"), weekB = h("button", { "aria-pressed": "false" }, "Week with most differences");
+  zoomBtns.append(wholeB, weekB);
+  card.append(h("div", { class: "row", style: { marginTop: "14px" } }, h("span", { class: "eyebrow" }, "Hour by hour: battery power, MW"), h("span", { class: "spacer" }), zoomBtns), e1,
+    h("div", { class: "eyebrow", style: { marginTop: "8px" } }, `Spot price, ${cur}/MWh`), e2);
+  const key = "cmp-" + Math.random();
+  const mkTs = (el, series, data, height, yr) => { const u = new uPlot({ width: width(), height, padding: [8, 8, 0, 0], legend: { show: false }, cursor: { sync: { key, setSeries: false }, drag: { x: true, y: false }, points: { size: 7 } },
+    scales: { x: { time: true }, y: yr ? { range: yr } : {} }, axes: axes(""), series: [{}, ...series] }, data, el); charts.push(u); return u; };
+  const P = st.mw;
+  const uC = mkTs(e1, [{ stroke: colRev, width: 1.5, paths: uPlot.paths.stepped({ align: 1 }) }, { stroke: colGrid, width: 1.5, paths: uPlot.paths.stepped({ align: 1 }) }],
+    [xs, Float64Array.from(c.revenue_plan.schedule_mw), Float64Array.from(c.grid_plan.schedule_mw)], 170, [-P * 1.08, P * 1.08]);
+  const uD = mkTs(e2, [{ stroke: colPrice, width: 1.5 }], [xs, Float64Array.from(c.price)], 120);
+  const setRange = (a, b) => [uC, uD].forEach((u) => u.setScale("x", { min: a, max: b }));
+  wholeB.onclick = () => { wholeB.setAttribute("aria-pressed", "true"); weekB.setAttribute("aria-pressed", "false"); setRange(xs[0], xs[T - 1]); };
+  weekB.onclick = () => {
+    let best = 0, bestV = -1, run = 0;
+    for (let i = 0; i < T; i++) { run += x.differ[i]; if (i >= 168) run -= x.differ[i - 168]; if (i >= 167 && run > bestV) { bestV = run; best = i - 167; } }
+    wholeB.setAttribute("aria-pressed", "false"); weekB.setAttribute("aria-pressed", "true"); setRange(xs[best], xs[Math.min(T - 1, best + 167)]);
+  };
+  const ro = new ResizeObserver(() => { const wdt = width(); [uA, uB, uC, uD].forEach((u) => u.setSize({ width: wdt, height: u.height })); });
+  ro.observe(card); charts.push({ destroy: () => ro.disconnect() });
+  const notes = [];
+  if (c.revenue_plan.simultaneous_mwh > 0.05) notes.push("The revenue plan charged and discharged at the same time.");
+  if (c.grid_plan.simultaneous_mwh > 0.05) notes.push(`The grid-friendly plan used the linear model, which charged and discharged at the same time (${fmt(c.grid_plan.simultaneous_mwh, 1)} MWh); its revenue is therefore approximate. The piecewise model avoids this.`);
+  if (st.wear > 0) notes.push(`Revenue includes a wear cost of ${fmt(st.wear, 0)} ${cur} per MWh through the battery.`);
+  notes.push("Spot price only: no tariffs, taxes or balancing, and the battery does not move the price. Revenue is the net sum of price × energy over the period.");
+  card.append(h("div", { class: "note", style: { marginTop: "12px" } }, notes.join(" ")));
+}
+
 function objMetric(r, obj) { return obj === "minmax" ? r.mean_of_max_after_pct : r.weighted_overload_after; }
 function renderRanking(root) {
   const R = S.results, obj = R.meta.study.objective;
@@ -1522,7 +1720,7 @@ function renderRanking(root) {
   card.append(h("div", { style: { overflowX: "auto", marginTop: "8px" } }, svg));
   // table
   const tbl = h("table", { class: "t rank" });
-  tbl.append(h("thead", {}, h("tr", {}, ...["Rank", "Placement", "Average peak", "Highest loading", "Weighted squared peaks", "Hours overloaded", "TSO exchange σ", "Cycles"].map((t) => h("th", {}, t)))));
+  tbl.append(h("thead", {}, h("tr", {}, ...["Rank", "Placement", "Average peak", "Highest loading", "Weighted squared peaks", "Hours overloaded", "TSO exchange σ", "Cycles", ...(R.meta.price ? [`Revenue (${R.meta.price.currency})`] : [])].map((t) => h("th", {}, t)))));
   const tb = h("tbody");
   sorted.forEach((r, i) => {
     const tr = h("tr", { onclick: () => openPlacement(r.bus) });
@@ -1532,7 +1730,8 @@ function renderRanking(root) {
       h("td", { class: "n" }, `${fmtSigned(100 * (r.weighted_overload_after / r.weighted_overload_before - 1), 1)} %`),
       h("td", { class: "n" }, `${r.hours_overloaded_before} → ${r.hours_overloaded_after}`),
       h("td", { class: "n" }, `${fmt(r.tso_std_before_mw, 2)} → ${fmt(r.tso_std_after_mw, 2)} MW`),
-      h("td", { class: "n" }, fmt(r.equivalent_cycles, 1)));
+      h("td", { class: "n" }, fmt(r.equivalent_cycles, 1)),
+      ...(R.meta.price ? [h("td", { class: "n" }, fmt(r.revenue, 0))] : []));
     tb.append(tr);
   });
   tbl.append(tb);
@@ -1546,8 +1745,14 @@ async function openPlacement(bus) {
   det.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
     const st = S.results.meta.study;
-    const r = await engine.json("run_bus", [bus, st.objective, st.model], (s, f) => { const b = $("#d-bar"); if (b) { b.style.width = Math.round(f * 100) + "%"; $("#d-txt").textContent = s; } });
-    S.results.single = r; det.innerHTML = ""; renderDetail(det, r);
+    const prog = (s, f) => { const b = $("#d-bar"); if (b) { b.style.width = Math.round(f * 100) + "%"; $("#d-txt").textContent = s; } };
+    if (S.results.meta.price) {
+      const cmp = await engine.json("compare_bus", [bus, st.objective, st.model], prog);
+      S.results.single = cmp.grid_plan; S.results.compare = cmp; det.innerHTML = ""; renderCompare(det, cmp); renderDetail(det, cmp.grid_plan);
+    } else {
+      const r = await engine.json("run_bus", [bus, st.objective, st.model], prog);
+      S.results.single = r; det.innerHTML = ""; renderDetail(det, r);
+    }
   } catch (e) { det.innerHTML = ""; det.append(h("div", { class: "note err", text: e.message })); }
 }
 function kpi(label, before, after, unit, d, lowerBetter = true, note) {
