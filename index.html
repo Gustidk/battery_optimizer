@@ -185,6 +185,7 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
 .mapwrap .zoombar { position: absolute; right: 10px; top: 10px; display: flex; gap: 4px; }
 .sld .adv { font: 400 9.5px var(--f-mono); fill: var(--ink); paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
 .sld .advbox { fill: var(--panel); stroke-width: 1.2; }
+.sld .flow { font: 500 10.5px var(--f-mono); fill: var(--ink); paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
 /* ---------- results ---------- */
 .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
@@ -484,7 +485,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "db4deedc90";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "5e8163be66";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -592,7 +593,7 @@ const S = {
   spec: null, sel: null, tool: "select", pendingBus: null,
   view: { tx: 0, ty: 0, k: 1 }, netView: "diagram", tableTab: "buses",
   check: null, study: { ...DEFAULT_STUDY, ...store.get("study", {}) },
-  weather: null, priceData: null, results: null, running: false, dirty: true, advanced: store.get("advanced", false), netValues: store.get("netValues", false),
+  weather: null, priceData: null, results: null, running: false, dirty: true, advanced: store.get("advanced", false), flowView: store.get("flowView", false), keep: null, netValues: store.get("netValues", false),
 };
 const U = 70; // px per diagram unit
 
@@ -707,6 +708,7 @@ function renderSLD(svg, spec, opts) {
   const out = [];
   const isSel = (kind, id) => opts.sel && opts.sel.kind === kind && opts.sel.id === id;
   const hasVals = Object.keys(vals).length > 0;
+  if (opts.detailMode === "flow" && opts.detail) opts.flowMax = Math.max(0.05, ...Object.values(opts.detail.branches).map((d) => d ? Math.max(Math.abs(d.p_from), Math.abs(d.p_to)) : 0));
   // branches
   const drawBranch = (kind, e, a, b) => {
     const A = busById(a), B = busById(b); if (!A || !B) return;
@@ -715,7 +717,8 @@ function renderSLD(svg, spec, opts) {
     const sw = kind === "line" ? lineSwitch(e.id) : null;
     const open = sw && !sw.closed;
     const col = hasVals ? heat(v) : kind === "trafo" ? ink2 : voltColor(A.vn_kv);
-    const w = hasVals ? 3 : 2;
+    const fdet = opts.detailMode === "flow" && opts.detail ? opts.detail.branches[key] : null;
+    const w = fdet ? 2.5 + 5 * Math.sqrt(Math.min(1, Math.max(Math.abs(fdet.p_from), Math.abs(fdet.p_to)) / (opts.flowMax || 1))) : hasVals ? 3 : 2;
     if (isSel(kind, e.id)) out.push(`<line class="sel" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke-width="12" stroke-linecap="round"/>`);
     const dash = open ? ' stroke-dasharray="5 4"' : (e.kind === "overhead" ? "" : "");
     out.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="${w}"${dash} stroke-opacity="${open ? 0.6 : 1}"/>`);
@@ -748,13 +751,13 @@ function renderSLD(svg, spec, opts) {
   for (const b of spec.buses) {
     const [x, y] = P(b); const att = attach.get(b.id) || [];
     const sz = Math.min(1, Math.max(0.5, k * 1.1));
-    const step = opts.detail ? 46 : 13;
+    const step = opts.detail ? (opts.detailMode === "flow" ? 68 : 46) : 13;
     const hl = Math.max(20, 10 + att.length * step) * sz; hlOf.set(b.id, hl);
     const col = voltColor(b.vn_kv);
     if (isSel("bus", b.id) || (opts.pending === b.id)) out.push(`<line class="sel" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16" stroke-linecap="round"/>`);
     out.push(`<line class="busbar" x1="${x - hl}" y1="${y}" x2="${x + hl}" y2="${y}" stroke="${col}" stroke-width="5"/>`);
     att.forEach((a, i) => {
-      const ox = x + (opts.detail ? 26 + i * step : 10 + i * step) * sz, sel = isSel(a.kind, a.e.id);
+      const ox = x + (opts.detail ? (opts.detailMode === "flow" ? 34 : 26) + i * step : 10 + i * step) * sz, sel = isSel(a.kind, a.e.id);
       a.ox = ox;
       const c = sel ? accent : ink2;
       if (a.kind === "load") {
@@ -784,7 +787,7 @@ function renderSLD(svg, spec, opts) {
     else if (k > 0.75 && !opts.readOnly) out.push(`<text class="lbl kv" x="${x - hl - 6}" y="${y + 16}" text-anchor="end">${fmt(b.vn_kv, b.vn_kv < 1 ? 2 : 0)} kV</text>`);
     out.push(`<line class="hit" data-k="bus:${b.id}" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16"/>`);
   }
-  if (opts.detail) advancedLabels(out, spec, opts.detail, P, hlOf, attach, opts.battery);
+  if (opts.detail) (opts.detailMode === "flow" ? flowLabels : advancedLabels)(out, spec, opts.detail, P, hlOf, attach, opts.battery);
   svg.innerHTML = out.join("");
 }
 /** PowerFactory-style result boxes: P [MW], Q [Mvar], I [kA] at both ends of every branch
@@ -832,6 +835,57 @@ function advancedLabels(out, spec, D, P, hlOf, attach, battery) {
     const d = D.ext[Number(g.bus)]; const b = busById(g.bus); if (!d || !b) continue;
     const [x, y] = P(b);
     out.push(`<text class="adv" text-anchor="start"><tspan x="${x + 14}" y="${y - 33}">${n2(d.p)}</tspan><tspan x="${x + 14}" y="${y - 22}">${n2(d.q)}</tspan><tspan x="${x + 14}" y="${y - 11}">${fmt(d.i, 3)}</tspan></text>`);
+  }
+}
+/** Power flow view: an arrow on every line and transformer in the direction of the active power,
+    with MW, Mvar (at the sending end) and loading %; MW and Mvar on every load and generator. */
+function flowLabels(out, spec, D, P, hlOf, attach, battery) {
+  const n2 = (v) => { const a = Math.abs(v); return fmt(v, a >= 100 ? 0 : a >= 10 ? 1 : 2); };
+  const panel = cssVar("--panel"), ink = cssVar("--ink");
+  const arrow = (x, y, ux, uy, s, col) => {                       // open arrow with a shaft, unlike the filled load symbol
+    const tx = x + ux * s, ty = y + uy * s, bx = x - ux * s, by = y - uy * s, hx = ux * s * 0.8, hy = uy * s * 0.8, nx = -uy * s * 0.7, ny = ux * s * 0.7;
+    const d = `M${bx} ${by}L${tx} ${ty}M${tx - hx + nx} ${ty - hy + ny}L${tx} ${ty}L${tx - hx - nx} ${ty - hy - ny}`;
+    return `<path d="${d}" fill="none" stroke="${panel}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+  };
+  const br = (kind, e, a, b) => {
+    const d = D.branches[elemKey(kind, e.id)]; const A = busById(a), B = busById(b);
+    if (!d || !A || !B) return;
+    const sw = kind === "line" ? lineSwitch(e.id) : null; if (sw && !sw.closed) return;
+    const [x1, y1] = P(A), [x2, y2] = P(B); const L = Math.hypot(x2 - x1, y2 - y1); if (L < 18) return;
+    const fwd = d.p_from >= 0, ps = fwd ? d.p_from : d.p_to, qs = fwd ? d.q_from : d.q_to;
+    let ux = (x2 - x1) / L, uy = (y2 - y1) / L; const ox = ux, oy = uy;
+    if (!fwd) { ux = -ux; uy = -uy; }
+    const nA = (attach.get(Number(a)) || []).length, nB = (attach.get(Number(b)) || []).length;
+    const t = kind === "trafo" ? 0.5 : nA > nB ? 0.66 : nB > nA ? 0.34 : 0.5;          // away from the bus that carries the load and generator labels
+    const mx = x1 + (x2 - x1) * t, my = y1 + (y2 - y1) * t;
+    const tr = kind === "trafo", ax = tr ? mx + ux * 24 : mx, ay = tr ? my + uy * 24 : my;      // keep the arrow clear of the transformer circles
+    if (Math.abs(ps) > 0.0005) out.push(arrow(ax, ay, ux, uy, 4 + 11 * Math.min(1, Math.max(0, d.loading) / 100), ink));
+    if (L < 50) return;
+    let nx = -oy, ny = ox; if (nx < -0.01 || (Math.abs(nx) <= 0.01 && ny < 0)) { nx = -nx; ny = -ny; }
+    if (Math.abs(oy) > 0.5) { nx = -1; ny = 0; }                                  // steep lines: label to the left, away from loads under the bus
+    const off = tr ? 24 : 11, px = mx + nx * off, py = my + ny * off;
+    const anchor = nx < -0.3 ? "end" : nx > 0.3 ? "start" : "middle";
+    const top = py - 11 + (ny > 0.5 ? 14 : 0);
+    out.push(`<text class="flow" text-anchor="${anchor}"><tspan x="${px}" y="${top}">${n2(Math.abs(ps))} MW</tspan><tspan x="${px}" y="${top + 11}">${n2(qs)} Mvar</tspan><tspan x="${px}" y="${top + 22}" style="fill:${heat(d.loading)};font-weight:700">${fmt(d.loading, 0)} %</tspan></text>`);
+  };
+  for (const l of spec.lines) br("line", l, l.from_bus, l.to_bus);
+  for (const t of spec.trafos) br("trafo", t, t.hv_bus, t.lv_bus);
+  const cLoad = cssVar("--after"), cDer = cssVar("--lv");
+  for (const b of spec.buses) {
+    const [, y] = P(b);
+    for (const a of attach.get(b.id) || []) {
+      const d = a.kind === "load" ? D.loads[a.e.id] : D.sgens[a.e.id]; if (!d || a.ox == null) continue;
+      const col = a.kind === "load" ? cLoad : cDer;
+      const down = a.kind === "load" ? d.p >= 0 : d.p < 0;                      // loads draw power down, generators push it up
+      if (Math.abs(d.p) > 0.0005) out.push(arrow(a.ox, y + 7, 0, down ? 1 : -1, 5, col));
+      out.push(`<text class="flow" text-anchor="middle" style="fill:${col}"><tspan x="${a.ox}" y="${y + 36}">${n2(d.p)} MW</tspan><tspan x="${a.ox}" y="${y + 47}">${n2(d.q)} Mvar</tspan></text>`);
+    }
+  }
+  for (const g of spec.ext_grids) {
+    const d = D.ext[Number(g.bus)]; const b = busById(g.bus); if (!d || !b) continue;
+    const [x, y] = P(b);
+    if (Math.abs(d.p) > 0.0005) out.push(arrow(x, y - 8, 0, d.p >= 0 ? 1 : -1, 5, ink));
+    out.push(`<text class="flow" text-anchor="start"><tspan x="${x + 14}" y="${y - 33}">${d.p >= 0 ? "TSO import" : "TSO export"}</tspan><tspan x="${x + 14}" y="${y - 22}">${n2(Math.abs(d.p))} MW</tspan><tspan x="${x + 14}" y="${y - 11}">${n2(d.q)} Mvar</tspan></text>`);
   }
 }
 function detailMaps(d, spec) {
@@ -1606,9 +1660,6 @@ function renderResults() {
   const m = R.meta, st = m.study;
   const objTxt = st.objective === "minmax" ? "Objective 1 · lower the average peak" : `Objective 3 · weighted squared peaks (lines ${st.wl}, transformers ${st.wt})`;
   const modelTxt = { tangent: "sensitivity at peak hour", tangent_hourly: "hourly sensitivities", piecewise: "piecewise linear AC model" }[st.model];
-  const advIn = h("input", { type: "checkbox", id: "adv-toggle", role: "switch", checked: S.advanced ? true : null });
-  advIn.onchange = () => { S.advanced = advIn.checked; store.set("advanced", S.advanced); renderResults(); };
-  const advSw = h("label", { class: "switch", title: "Show P, Q and I on every line and transformer end, and voltage on every bus, in the network map" }, advIn, h("span", { class: "track", "aria-hidden": "true" }), "Advanced analysis");
   const sub = `${m.spec.name || "Network"} · ${m.weather.start} to ${addDays(m.weather.start, Math.ceil(m.weather.hours / 24) - 1)} · ${m.weather.source === "synthetic" ? "synthetic weather" : "measured weather"}`;
   const title = R.kind === "loadflow" ? "Load flow" : R.kind === "all" ? "Where should the battery go?" : `Battery at ${R.single.bus_name}`;
   const chips = R.kind === "loadflow" ? [h("span", { class: "chip" }, `${m.weather.hours} hours`), h("span", { class: "chip" }, "No battery")]
@@ -1616,7 +1667,7 @@ function renderResults() {
   if ((st.load_f ?? 1) !== 1 || (st.der_f ?? 1) !== 1) chips.push(h("span", { class: "chip" }, `Loads ×${fmt(st.load_f ?? 1, 2)} · DER ×${fmt(st.der_f ?? 1, 2)}`));
   const head = h("div", { class: "row" },
     h("div", { style: { minWidth: 0 } }, h("span", { class: "eyebrow" }, sub), h("h2", {}, title)),
-    h("span", { class: "spacer" }), ...chips, advSw);
+    h("span", { class: "spacer" }), ...chips);
   root.append(head);
   if (S.dirty) root.append(h("div", { class: "note warn" }, "The network or the study settings changed after this run. Run the study again to update the results."));
   if (R.kind === "loadflow") { renderLoadflow(root); return; }
@@ -1895,7 +1946,7 @@ function renderDetail(root, r) {
 
   // ----- element peaks (dumbbell) + map
   const grid = h("div", { class: "resgrid" });
-  if (S.advanced) { root.append(mapCard(r)); grid.append(peaksCard(r, els)); }
+  if (S.advanced || S.flowView) { root.append(mapCard(r)); grid.append(peaksCard(r, els)); }
   else grid.append(peaksCard(r, els), mapCard(r));
   root.append(grid);
   const exp = h("div", { class: "row" }, h("button", { class: "btn", onclick: () => showExport("results") }, "Hourly results as CSV"), h("span", { class: "muted", style: { fontSize: "12px" } }, "Every hour: battery power, stored energy and the loading of each line and transformer, with and without battery."));
@@ -1929,17 +1980,21 @@ function peaksCard(r, els) {
   return card;
 }
 function mapCard(r, opts = {}) {
-  const R = S.results, base = R.base, spec = R.meta.spec, els = base.elements, T = base.hours, adv = S.advanced;
+  const R = S.results, base = R.base, spec = R.meta.spec, els = base.elements, T = base.hours;
+  const flow = !!S.flowView, adv = !!S.advanced || flow;          // the two detail views never run together
+  const keep = S.keep; S.keep = null;
   const card = h("div", { class: "card", style: { display: "flex", flexDirection: "column", gap: "10px" } });
   let hour = opts.hour ?? 0;
   if (r && opts.hour == null) base.loading.forEach((row, i) => { const v = r.path.reduce((a, j) => a + row[j], 0); if (v > r.path.reduce((a, j) => a + base.loading[hour][j], 0)) hour = i; });
-  let mode = r ? "after" : "before"; let timer = null; let view = null; let detail = null; let want = null; let busy = false;
+  if (keep) hour = Math.min(T - 1, Math.max(0, keep.hour));
+  let mode = r ? (keep && keep.mode === "before" ? "before" : "after") : "before"; let timer = null; let view = null; let detail = null; let want = null; let busy = false;
   const wrap = h("div", { class: "mapwrap" + (adv ? " adv" : "") });
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("class", "sld"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Network at the selected hour"); wrap.append(svg);
   const slider = h("input", { type: "range", min: 0, max: T - 1, value: hour, "aria-label": "Hour" });
   const lbl = h("span", { class: "mono", style: { minWidth: "150px" } });
   const play = h("button", { class: "btn" }, "Play");
   const errNote = h("div", { class: "note warn", hidden: true });
+  const sumBox = h("div", { class: "muted mono", style: { fontSize: "12px" }, hidden: true });
   const t0 = Date.parse(R.meta.weather.start + "T00:00:00Z");
   const toDetail = (d, key) => {
     const out = { key, branches: {}, buses: {}, ext: {} };
@@ -1966,7 +2021,7 @@ function mapCard(r, opts = {}) {
   const draw = () => {
     const vals = {}; const L = mode === "after" ? r.loading_after[hour] : base.loading[hour];
     els.forEach((e, i) => (vals[elemKey(e.type, e.id)] = L[i]));
-    const keep = S.spec; S.spec = spec;                  // renderSLD looks buses up in S.spec
+    const keepSpec = S.spec; S.spec = spec;              // renderSLD looks buses up in S.spec
     if (!view) {
       view = fitView(svg, spec, adv ? 70 : 46);
       if (adv && view.k < 1.55) {                       // zoom in so labels have room; pan to explore
@@ -1978,8 +2033,15 @@ function mapCard(r, opts = {}) {
     const vm = {}; const V = mode === "after" ? r.vm_after[hour] : base.vm[hour]; base.buses.forEach((b, i) => (vm[b.id] = V[i]));
     const det = adv && detail && detail.key === `${hour}:${mode}` ? detail : null;
     renderSLD(svg, spec, { view, values: vals, readOnly: true, battery: mode === "after" ? { bus: r.bus, p: r.schedule_mw[hour] } : null,
-      labels: true, showVm: !adv && view.k > 0.6, vm, detail: det });
-    S.spec = keep;
+      labels: !(flow && det), showVm: !adv && view.k > 0.6, vm, detail: det, detailMode: flow ? "flow" : "pqi" });
+    S.spec = keepSpec;
+    if (flow && det) {
+      const sum = (o) => Object.values(o).reduce((t, x) => t + x.p, 0), m2 = (v) => fmt(v, Math.abs(v) >= 10 ? 1 : 2);
+      const ld = sum(det.loads), dr = sum(det.sgens), ex = sum(det.ext), bp = mode === "after" ? r.schedule_mw[hour] : 0;
+      sumBox.hidden = false;
+      sumBox.textContent = `Loads use ${m2(ld)} MW · DER delivers ${m2(dr)} MW · ${ex >= 0 ? "TSO import" : "TSO export"} ${m2(Math.abs(ex))} MW · losses ${m2(det.losses)} MW`
+        + (mode === "after" ? ` · battery ${bp > 0.005 ? "discharges" : bp < -0.005 ? "charges" : "idle"} ${m2(Math.abs(bp))} MW` : "");
+    } else sumBox.hidden = true;
     lbl.textContent = new Date(t0 + hour * 3600e3).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" })
       + (det ? ` · losses ${fmt(det.losses, 3)} MW` : "");
   };
@@ -1993,7 +2055,7 @@ function mapCard(r, opts = {}) {
   charts.push({ destroy: () => timer && clearInterval(timer) });
   const ctl = h("div", { class: "mapctl" });
   if (r) {
-    const seg = h("div", { class: "seg" }); const bB = h("button", { "aria-pressed": "false" }, "Without"), bA = h("button", { "aria-pressed": "true" }, "With battery"); seg.append(bB, bA);
+    const seg = h("div", { class: "seg" }); const bB = h("button", { "aria-pressed": String(mode === "before") }, "Without"), bA = h("button", { "aria-pressed": String(mode === "after") }, "With battery"); seg.append(bB, bA);
     bB.onclick = () => { mode = "before"; bB.setAttribute("aria-pressed", "true"); bA.setAttribute("aria-pressed", "false"); go(); };
     bA.onclick = () => { mode = "after"; bA.setAttribute("aria-pressed", "true"); bB.setAttribute("aria-pressed", "false"); go(); };
     ctl.append(seg);
@@ -2012,9 +2074,19 @@ function mapCard(r, opts = {}) {
     svg.addEventListener("wheel", (ev) => { ev.preventDefault(); const rc = svg.getBoundingClientRect(); zoom(Math.exp(-ev.deltaY * 0.0015), ev.clientX - rc.left, ev.clientY - rc.top); }, { passive: false });
   }
   const sub = r ? "Starts at the busiest hour on the battery’s path." : "Starts at the hour of the highest loading.";
-  card.append(h("div", { class: "chart-title" }, h("h3", {}, "Network at a chosen hour"), h("span", { class: "muted" }, sub)), ctl, errNote, wrap,
+  const mkSw = (id, label, title, on, set) => {
+    const inp = h("input", { type: "checkbox", id, role: "switch", checked: on ? true : null });
+    inp.onchange = () => { set(inp.checked); store.set("advanced", S.advanced); store.set("flowView", S.flowView); S.keep = { hour, mode }; renderResults(); };
+    return h("label", { class: "switch", title }, inp, h("span", { class: "track", "aria-hidden": "true" }), label);
+  };
+  const togs = h("div", { class: "row", style: { gap: "18px" } },
+    mkSw("adv-toggle", "P, Q, I and voltage values", "Show P, Q and I at the ends of every line and transformer, on every load and generator, and the voltage on every bus. Cannot be combined with the power flow view.", S.advanced && !flow, (c) => { S.advanced = c; if (c) S.flowView = false; }),
+    mkSw("flow-toggle", "Detailed power flow: amount and direction", "Arrows show which way the active power flows on every line and transformer, with MW, Mvar and loading in %, and the MW and Mvar of every load and generator. Cannot be combined with the P, Q, I view.", flow, (c) => { S.flowView = c; if (c) S.advanced = false; }));
+  card.append(h("div", { class: "chart-title" }, h("h3", {}, "Network at a chosen hour"), h("span", { class: "muted" }, sub)), togs, ctl, sumBox, errNote, wrap,
     h("div", { class: "leg" }, h("span", {}, "Loading"), h("span", { class: "heatbar", style: { background: heatGradient() } }), h("span", { class: "mono" }, "0 → 100 %"),
-      adv ? h("span", {}, "Branch ends: P [MW] · Q [Mvar] · I [kA], positive out of the bus · Loads (consumed) and generators (delivered): P · Q · I · Bus boxes: U [kV] · u [pu] · angle [°] · External grid: P · Q · I. Drag to pan, scroll to zoom.") : null));
+      flow ? h("span", {}, "Arrows show the direction of active power; the bigger the arrow, the higher the loading (full size at 100 % and above); thicker lines carry more MW. Beside each line: MW · Mvar at the sending end · loading %. Under loads (↓ use) and generators (↑ deliver): MW · Mvar. Drag to pan, scroll to zoom.") : null,
+      adv && !flow ? h("span", {}, "Branch ends: P [MW] · Q [Mvar] · I [kA], positive out of the bus · Loads (consumed) and generators (delivered): P · Q · I · Bus boxes: U [kV] · u [pu] · angle [°] · External grid: P · Q · I. Drag to pan, scroll to zoom.") : null));
+  if (keep) requestAnimationFrame(() => window.scrollTo({ top: Math.max(0, card.getBoundingClientRect().top + window.scrollY - 80) }));
   requestAnimationFrame(go);
   let lastW = 0;
   const ro = new ResizeObserver(() => { const w = wrap.clientWidth; if (Math.abs(w - lastW) > 4) { lastW = w; view = null; draw(); } }); ro.observe(wrap); charts.push({ destroy: () => ro.disconnect() });
@@ -2064,7 +2136,7 @@ function renderLoadflow(root) {
   const ro = new ResizeObserver(() => { const w = Math.max(280, c1.clientWidth); [u1, u2].forEach((u) => u.setSize({ width: w, height: u.height })); }); ro.observe(ts); charts.push({ destroy: () => ro.disconnect() });
   const grid = h("div", { class: "resgrid" });
   const map = mapCard(null, { hour: lf.max_loading_hour });
-  if (S.advanced) { root.append(map); grid.append(peaksCard({ peaks_before: lf.peaks }, els)); }
+  if (S.advanced || S.flowView) { root.append(map); grid.append(peaksCard({ peaks_before: lf.peaks }, els)); }
   else grid.append(peaksCard({ peaks_before: lf.peaks }, els), map);
   root.append(grid);
   root.append(h("div", { class: "row" }, h("button", { class: "btn", onclick: () => showExport("results") }, "Hourly results as CSV"), h("span", { class: "muted", style: { fontSize: "12px" } }, "Every hour: grid exchange, losses and the loading of each line and transformer.")));
