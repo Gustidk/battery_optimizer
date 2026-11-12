@@ -499,7 +499,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "8af6e60474";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "0ffdd6e0f0";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -2113,28 +2113,38 @@ function renderDetail(root, r) {
 }
 function peaksCard(r, els) {
   const single = !r.peaks_after;
+  const r0 = r, cmp0 = S.results && S.results.compare;
+  const revAvail = !single && !!(cmp0 && cmp0.revenue_plan && cmp0.revenue_plan.bus === r.bus && cmp0.revenue_plan.peaks_after), revOn = revAvail && !!S.showRevPeaks;
   const card = h("div", { class: "card" });
   card.append(...[h("div", { class: "chart-title" }, h("h3", {}, "Peak loading per element"), single ? h("span", { class: "muted" }, "Highest loading of each line and transformer in the period") : null),
-    single ? null : h("div", { class: "leg", style: { marginTop: "6px" } }, (() => { const a = h("span", {}), b = h("span", {}); const i1 = h("i", { class: "dotk" }), i2 = h("i", { class: "dotk" }); i1.style.background = cssVar("--before"); i2.style.background = cssVar("--after"); a.append(i1, "Without battery"); b.append(i2, "With battery"); return [a, b, h("span", { class: "muted" }, "Bold: on the battery’s path to the grid")]; })())].filter(Boolean));
+    single ? null : h("div", { class: "leg", style: { marginTop: "6px" } }, (() => { const a = h("span", {}), b = h("span", {}); const i1 = h("i", { class: "dotk" }), i2 = h("i", { class: "dotk" }); i1.style.background = cssVar("--before"); i2.style.background = cssVar("--after"); a.append(i1, "Without battery"); b.append(i2, revOn ? "Grid-friendly plan" : "With battery"); const out = [a, b]; if (revOn) { const c3 = h("span", {}), i3 = h("i", { class: "dotk" }); i3.style.background = cssVar("--battery"); c3.append(i3, "Revenue plan"); out.push(c3); } return [...out, h("span", { class: "muted" }, "Bold: on the battery’s path to the grid")]; })())].filter(Boolean));
   if (single) r = { ...r, peaks_after: r.peaks_before, path: r.path || [] };
+  // Revenue plan for the same battery position: already validated with an AC load flow in compare_bus, so this costs no extra load flows.
+  const rev = revOn ? cmp0.revenue_plan.peaks_after : null;
   const idx = els.map((_, i) => i).sort((a, b) => r.peaks_before[b] - r.peaks_before[a]);
-  const W = 560, rowH = 22, padL = 150, padR = 92, H = idx.length * rowH + 28;
-  const mx = Math.max(100, ...r.peaks_before, ...r.peaks_after);
+  const W = 560, rowH = 22, padL = 150, padR = rev ? 160 : 108, H = idx.length * rowH + 28;
+  const mx = Math.max(100, ...r.peaks_before, ...r.peaks_after, ...(rev || []));
   const sx = (v) => padL + (v / mx) * (W - padL - padR);
   const path = new Set(r.path);
   let s = "";
   for (const t of [0, 25, 50, 75, 100]) if (t <= mx) s += `<line x1="${sx(t)}" y1="0" x2="${sx(t)}" y2="${H - 22}" stroke="${cssVar(t === 100 ? "--line" : "--grid")}"/><text x="${sx(t)}" y="${H - 8}" text-anchor="middle" font-size="10" font-family="IBM Plex Mono, monospace" fill="${cssVar("--muted")}">${t}%</text>`;
   idx.forEach((i, row) => {
     const y = 4 + row * rowH + rowH / 2, a = r.peaks_before[i], b = r.peaks_after[i];
-    s += `<g><rect class="row-hit" x="0" y="${y - rowH / 2}" width="${W}" height="${rowH}"/><title>${esc(els[i].name)}: ${single ? fmt(a, 1) + " %" : `${fmt(a, 1)} % → ${fmt(b, 1)} %`}</title>`;
+    s += `<g><rect class="row-hit" x="0" y="${y - rowH / 2}" width="${W}" height="${rowH}"/><title>${esc(els[i].name)}: ${single ? fmt(a, 1) + " %" : `${fmt(a, 1)} % → ${fmt(b, 1)} %${rev ? " (revenue plan " + fmt(rev[i], 1) + " %)" : ""}`}</title>`;
     s += `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-size="11.5" fill="${cssVar("--ink")}" font-weight="${path.has(i) ? 600 : 400}">${esc(els[i].name.length > 22 ? els[i].name.slice(0, 21) + "…" : els[i].name)}</text>`;
-    s += `<line x1="${sx(a)}" y1="${y}" x2="${sx(b)}" y2="${y}" stroke="${cssVar("--line")}" stroke-width="2"/>`;
+    const cc = rev ? rev[i] : null;
+    s += `<line x1="${sx(Math.min(a, b, cc ?? a))}" y1="${y}" x2="${sx(Math.max(a, b, cc ?? b))}" y2="${y}" stroke="${cssVar("--line")}" stroke-width="2"/>`;
     if (single) s += `<circle cx="${sx(a)}" cy="${y}" r="4.5" fill="${a > 100 ? cssVar("--crit") : cssVar("--after")}" stroke="${cssVar("--panel")}" stroke-width="2"/>`;
-    else s += `<circle cx="${sx(a)}" cy="${y}" r="4.5" fill="${cssVar("--before")}" stroke="${cssVar("--panel")}" stroke-width="2"/><circle cx="${sx(b)}" cy="${y}" r="4.5" fill="${cssVar("--after")}" stroke="${cssVar("--panel")}" stroke-width="2"/>`;
-    s += `<text x="${W - 4}" y="${y + 4}" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="${cssVar("--ink-2")}">${single ? fmt(a, 1) + " %" : `${fmt(a, 1)} → ${fmt(b, 1)}`}</text></g>`;
+    else s += `<circle cx="${sx(a)}" cy="${y}" r="4.5" fill="${cssVar("--before")}" stroke="${cssVar("--panel")}" stroke-width="2"/><circle cx="${sx(b)}" cy="${y}" r="4.5" fill="${cssVar("--after")}" stroke="${cssVar("--panel")}" stroke-width="2"/>` + (cc == null ? "" : `<circle cx="${sx(cc)}" cy="${y}" r="4.5" fill="${cssVar("--battery")}" stroke="${cssVar("--panel")}" stroke-width="2"/>`);
+    s += `<text x="${W - 4}" y="${y + 4}" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="${cssVar("--ink-2")}">${single ? fmt(a, 1) + " %" : `${fmt(a, 1)} → ${fmt(b, 1)}${cc == null ? "" : " → " + fmt(cc, 1)}`}</text></g>`;
   });
   const svg = svgEl({ class: "dumb", viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: "max-width:100%;height:auto", role: "img", "aria-label": "Peak loading per element with and without battery" });
   svg.innerHTML = s;
+  if (revAvail) {
+    const cb = h("input", { type: "checkbox", role: "switch" }); cb.checked = revOn;
+    cb.onchange = () => { S.showRevPeaks = cb.checked; card.replaceWith(peaksCard(r0, els)); };
+    card.querySelector(".chart-title").append(h("span", { class: "spacer" }), h("label", { class: "switch" }, cb, h("span", { class: "track", "aria-hidden": "true" }), h("span", {}, "Show revenue plan")));
+  }
   card.append(h("div", { style: { overflowX: "auto", marginTop: "8px" } }, svg));
   return card;
 }
