@@ -484,7 +484,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "4a70964ea8";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "db4deedc90";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -525,7 +525,7 @@ function toast(msg) {
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
 // loading % -> semantic heat colour
-const HEAT = [[0, [76, 175, 122]], [60, [31, 157, 85]], [80, [233, 168, 18]], [100, [208, 59, 59]], [130, [122, 20, 20]]];
+const HEAT = [[0, [58, 170, 110]], [40, [242, 200, 30]], [62, [214, 62, 56]], [80, [128, 62, 172]], [100, [92, 34, 142]], [130, [58, 16, 100]]];
 function heat(v) {
   if (v == null || !isFinite(v)) return cssVar("--muted");
   if (v <= HEAT[0][0]) return `rgb(${HEAT[0][1]})`;
@@ -537,7 +537,7 @@ function heat(v) {
   }
   return `rgb(${HEAT[HEAT.length - 1][1]})`;
 }
-const heatGradient = () => `linear-gradient(90deg, ${[0, 30, 60, 80, 100].map((v) => heat(v) + " " + (v / 100 * 100) + "%").join(",")})`;
+const heatGradient = () => `linear-gradient(90deg, ${[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((v) => heat(v) + " " + (v / 100 * 100) + "%").join(",")})`;
 
 // ============================================================ engine client
 class Engine {
