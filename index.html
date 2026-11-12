@@ -485,7 +485,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "5e8163be66";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "491aa2c64b";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -698,7 +698,11 @@ function voltColor(kv) { return kv >= 60 ? cssVar("--hv") : kv >= 1 ? cssVar("--
 
 /** Render a network into an <svg>. opts: {view, values: {"line:3": pct}, sel, battery:{bus,p}, readOnly, pending} */
 function renderSLD(svg, spec, opts) {
-  const { tx, ty, k } = opts.view;
+  let { tx, ty, k } = opts.view;
+  // Power flow view: draw everything at one fixed layout scale and zoom the whole drawing as a unit, so
+  // text, arrows and symbols keep their spacing when zooming out instead of piling up.
+  const flowZoom = opts.detailMode === "flow" && !!opts.detail, KB = 1.6, zoomS = k / KB;
+  if (flowZoom) { opts = { ...opts, origView: opts.view, view: { tx: 0, ty: 0, k: KB } }; ({ tx, ty, k } = opts.view); }
   const P = (b) => [tx + b.x * U * k, ty + b.y * U * k];
   const vals = opts.values || {};
   const ink2 = cssVar("--ink-2"), muted = cssVar("--muted"), bat = cssVar("--battery"), accent = cssVar("--accent");
@@ -751,14 +755,19 @@ function renderSLD(svg, spec, opts) {
   for (const b of spec.buses) {
     const [x, y] = P(b); const att = attach.get(b.id) || [];
     const sz = Math.min(1, Math.max(0.5, k * 1.1));
-    const step = opts.detail ? (opts.detailMode === "flow" ? 68 : 46) : 13;
-    const hl = Math.max(20, 10 + att.length * step) * sz; hlOf.set(b.id, hl);
+    const flowM = opts.detailMode === "flow" && !!opts.detail;       // loads below the bus bar, generators above it
+    const step = opts.detail ? (flowM ? 68 : 46) : 13;
+    const nLoad = att.filter((q) => q.kind === "load").length;
+    const hl = Math.max(20, 10 + (flowM ? Math.max(nLoad, att.length - nLoad) : att.length) * step) * sz; hlOf.set(b.id, hl);
     const col = voltColor(b.vn_kv);
     if (isSel("bus", b.id) || (opts.pending === b.id)) out.push(`<line class="sel" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16" stroke-linecap="round"/>`);
     out.push(`<line class="busbar" x1="${x - hl}" y1="${y}" x2="${x + hl}" y2="${y}" stroke="${col}" stroke-width="5"/>`);
+    let li = 0, di = 0;
     att.forEach((a, i) => {
-      const ox = x + (opts.detail ? (opts.detailMode === "flow" ? 34 : 26) + i * step : 10 + i * step) * sz, sel = isSel(a.kind, a.e.id);
-      a.ox = ox;
+      const slot = flowM ? (a.kind === "load" ? li++ : di++) : i;
+      const ox = x + ((opts.detail ? (flowM ? 34 : 26) : 10) + slot * step) * sz, sel = isSel(a.kind, a.e.id);
+      a.ox = ox; a.up = flowM && a.kind !== "load";
+      if (a.up) out.push(`<g transform="translate(0 ${2 * y}) scale(1 -1)">`);
       const c = sel ? accent : ink2;
       if (a.kind === "load") {
         out.push(`<path d="M${ox} ${y + 2}v14" stroke="${c}" stroke-width="1.4"/><path d="M${ox - 4.5} ${y + 15}h9l-4.5 7z" fill="${c}"/>`);
@@ -769,6 +778,7 @@ function renderSLD(svg, spec, opts) {
       } else {
         out.push(`<path d="M${ox} ${y + 2}v8" stroke="${c}" stroke-width="1.4"/><rect x="${ox - 6}" y="${y + 10}" width="12" height="12" fill="${cssVar("--panel")}" stroke="${c}" stroke-width="1.4"/><path d="M${ox - 6} ${y + 22}L${ox + 6} ${y + 10}" stroke="${c}" stroke-width="1.1"/>`);
       }
+      if (a.up) out.push("</g>");
       if (!opts.readOnly) out.push(`<rect class="hit" data-k="${a.kind}:${a.e.id}" x="${ox - 7}" y="${y + 2}" width="14" height="22"/>`);
     });
     for (const e of spec.ext_grids.filter((g) => Number(g.bus) === b.id)) {
@@ -777,9 +787,9 @@ function renderSLD(svg, spec, opts) {
       if (!opts.readOnly) out.push(`<rect class="hit" data-k="ext:${e.id}" x="${x - 11}" y="${y - 35}" width="22" height="34"/>`);
     }
     if (opts.battery && Number(opts.battery.bus) === b.id) {
-      const bx = x + hl - 4, p = opts.battery.p;
+      const bx = flowM ? x - hl + 6 : x + hl - 4, p = opts.battery.p;
       out.push(`<path d="M${bx} ${y - 2}v-9" stroke="${bat}" stroke-width="1.6"/><rect x="${bx - 9}" y="${y - 25}" width="18" height="14" rx="2" fill="${bat}"/><path d="M${bx - 5} ${y - 18}h3M${bx + 2} ${y - 18}h3M${bx + 3.5} ${y - 19.5}v3" stroke="#fff" stroke-width="1.3"/>`);
-      if (p != null) out.push(`<text class="val" x="${bx + 12}" y="${y - 16}" style="fill:${bat}">${p > 0.005 ? "discharging" : p < -0.005 ? "charging" : "idle"} ${fmt(Math.abs(p), 2)} MW</text>`);
+      if (p != null) out.push(`<text class="val" x="${flowM ? bx - 12 : bx + 12}" y="${y - 16}"${flowM ? ' text-anchor="end"' : ""} style="fill:${bat}">${p > 0.005 ? "discharging" : p < -0.005 ? "charging" : "idle"} ${fmt(Math.abs(p), 2)} MW</text>`);
     }
     const lbl = esc(b.name || `Bus ${b.id}`);
     out.push(`<text class="lbl" x="${x - hl - 6}" y="${y + 4}" text-anchor="end">${lbl}</text>`);
@@ -787,8 +797,8 @@ function renderSLD(svg, spec, opts) {
     else if (k > 0.75 && !opts.readOnly) out.push(`<text class="lbl kv" x="${x - hl - 6}" y="${y + 16}" text-anchor="end">${fmt(b.vn_kv, b.vn_kv < 1 ? 2 : 0)} kV</text>`);
     out.push(`<line class="hit" data-k="bus:${b.id}" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16"/>`);
   }
-  if (opts.detail) (opts.detailMode === "flow" ? flowLabels : advancedLabels)(out, spec, opts.detail, P, hlOf, attach, opts.battery);
-  svg.innerHTML = out.join("");
+  if (opts.detail) (opts.detailMode === "flow" ? flowLabels : advancedLabels)(out, spec, opts.detail, P, hlOf, attach, opts.battery, flowZoom ? zoomS : 1);
+  svg.innerHTML = flowZoom ? `<g transform="translate(${opts.origView.tx} ${opts.origView.ty}) scale(${zoomS})">${out.join("")}</g>` : out.join("");
 }
 /** PowerFactory-style result boxes: P [MW], Q [Mvar], I [kA] at both ends of every branch
     (positive = flowing out of that bus into the branch) and U [kV], u [pu], angle [deg] per bus. */
@@ -839,7 +849,7 @@ function advancedLabels(out, spec, D, P, hlOf, attach, battery) {
 }
 /** Power flow view: an arrow on every line and transformer in the direction of the active power,
     with MW, Mvar (at the sending end) and loading %; MW and Mvar on every load and generator. */
-function flowLabels(out, spec, D, P, hlOf, attach, battery) {
+function flowLabels(out, spec, D, P, hlOf, attach, battery, k) {
   const n2 = (v) => { const a = Math.abs(v); return fmt(v, a >= 100 ? 0 : a >= 10 ? 1 : 2); };
   const panel = cssVar("--panel"), ink = cssVar("--ink");
   const arrow = (x, y, ux, uy, s, col) => {                       // open arrow with a shaft, unlike the filled load symbol
@@ -847,6 +857,10 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery) {
     const d = `M${bx} ${by}L${tx} ${ty}M${tx - hx + nx} ${ty - hy + ny}L${tx} ${ty}L${tx - hx - nx} ${ty - hy - ny}`;
     return `<path d="${d}" fill="none" stroke="${panel}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
   };
+  // Level of detail: the text only grows with zoom through the spacing, so show less when there is less room.
+  const s = k;                                                    // zoom of the whole drawing (1 = layout size)
+  const symLevel = s >= 0.7 ? 2 : s >= 0.45 ? 1 : 0;             // 2 = MW and Mvar, 1 = MW, 0 = arrows only
+  const lineLevel = s >= 0.7 ? 3 : s >= 0.45 ? 2 : s >= 0.28 ? 1 : 0;
   const br = (kind, e, a, b) => {
     const d = D.branches[elemKey(kind, e.id)]; const A = busById(a), B = busById(b);
     if (!d || !A || !B) return;
@@ -860,13 +874,17 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery) {
     const mx = x1 + (x2 - x1) * t, my = y1 + (y2 - y1) * t;
     const tr = kind === "trafo", ax = tr ? mx + ux * 24 : mx, ay = tr ? my + uy * 24 : my;      // keep the arrow clear of the transformer circles
     if (Math.abs(ps) > 0.0005) out.push(arrow(ax, ay, ux, uy, 4 + 11 * Math.min(1, Math.max(0, d.loading) / 100), ink));
-    if (L < 50) return;
+    const lines = Math.min(lineLevel, L >= 110 ? 3 : L >= 70 ? 2 : L >= 40 ? 1 : 0); if (!lines) return;
     let nx = -oy, ny = ox; if (nx < -0.01 || (Math.abs(nx) <= 0.01 && ny < 0)) { nx = -nx; ny = -ny; }
     if (Math.abs(oy) > 0.5) { nx = -1; ny = 0; }                                  // steep lines: label to the left, away from loads under the bus
     const off = tr ? 24 : 11, px = mx + nx * off, py = my + ny * off;
     const anchor = nx < -0.3 ? "end" : nx > 0.3 ? "start" : "middle";
-    const top = py - 11 + (ny > 0.5 ? 14 : 0);
-    out.push(`<text class="flow" text-anchor="${anchor}"><tspan x="${px}" y="${top}">${n2(Math.abs(ps))} MW</tspan><tspan x="${px}" y="${top + 11}">${n2(qs)} Mvar</tspan><tspan x="${px}" y="${top + 22}" style="fill:${heat(d.loading)};font-weight:700">${fmt(d.loading, 0)} %</tspan></text>`);
+    const rows = [];
+    if (lines === 3) rows.push(`${n2(Math.abs(ps))} MW`, `${n2(qs)} Mvar`);
+    else if (lines === 2) rows.push(`${n2(Math.abs(ps))} MW`);
+    rows.push(`<pct>`);
+    const top = py - 5.5 * (rows.length - 1) + (ny > 0.5 ? 14 : 0);
+    out.push(`<text class="flow" text-anchor="${anchor}">${rows.map((r, q) => `<tspan x="${px}" y="${top + q * 11}"${r === "<pct>" ? ` style="fill:${heat(d.loading)};font-weight:700"` : ""}>${r === "<pct>" ? fmt(d.loading, 0) + " %" : r}</tspan>`).join("")}</text>`);
   };
   for (const l of spec.lines) br("line", l, l.from_bus, l.to_bus);
   for (const t of spec.trafos) br("trafo", t, t.hv_bus, t.lv_bus);
@@ -875,10 +893,13 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery) {
     const [, y] = P(b);
     for (const a of attach.get(b.id) || []) {
       const d = a.kind === "load" ? D.loads[a.e.id] : D.sgens[a.e.id]; if (!d || a.ox == null) continue;
-      const col = a.kind === "load" ? cLoad : cDer;
-      const down = a.kind === "load" ? d.p >= 0 : d.p < 0;                      // loads draw power down, generators push it up
-      if (Math.abs(d.p) > 0.0005) out.push(arrow(a.ox, y + 7, 0, down ? 1 : -1, 5, col));
-      out.push(`<text class="flow" text-anchor="middle" style="fill:${col}"><tspan x="${a.ox}" y="${y + 36}">${n2(d.p)} MW</tspan><tspan x="${a.ox}" y="${y + 47}">${n2(d.q)} Mvar</tspan></text>`);
+      const col = a.kind === "load" ? cLoad : cDer, up = !!a.up;
+      // loads hang below the bus bar (power flows away from it), generators stand above it (power flows into it)
+      if (Math.abs(d.p) > 0.0005) out.push(arrow(a.ox, up ? y - 7 : y + 7, 0, d.p >= 0 ? 1 : -1, 5, col));   // down = away from the bar (load) or into it (generator)
+      if (!symLevel) continue;
+      const rows = symLevel === 2 ? [`${n2(d.p)} MW`, `${n2(d.q)} Mvar`] : [`${n2(d.p)} MW`];
+      const base = up ? y - 28 - (rows.length - 1) * 11 : y + 36;
+      out.push(`<text class="flow" text-anchor="middle" style="fill:${col}">${rows.map((r, q) => `<tspan x="${a.ox}" y="${base + q * 11}">${r}</tspan>`).join("")}</text>`);
     }
   }
   for (const g of spec.ext_grids) {
@@ -2084,7 +2105,7 @@ function mapCard(r, opts = {}) {
     mkSw("flow-toggle", "Detailed power flow: amount and direction", "Arrows show which way the active power flows on every line and transformer, with MW, Mvar and loading in %, and the MW and Mvar of every load and generator. Cannot be combined with the P, Q, I view.", flow, (c) => { S.flowView = c; if (c) S.advanced = false; }));
   card.append(h("div", { class: "chart-title" }, h("h3", {}, "Network at a chosen hour"), h("span", { class: "muted" }, sub)), togs, ctl, sumBox, errNote, wrap,
     h("div", { class: "leg" }, h("span", {}, "Loading"), h("span", { class: "heatbar", style: { background: heatGradient() } }), h("span", { class: "mono" }, "0 → 100 %"),
-      flow ? h("span", {}, "Arrows show the direction of active power; the bigger the arrow, the higher the loading (full size at 100 % and above); thicker lines carry more MW. Beside each line: MW · Mvar at the sending end · loading %. Under loads (↓ use) and generators (↑ deliver): MW · Mvar. Drag to pan, scroll to zoom.") : null,
+      flow ? h("span", {}, "Arrows show the direction of active power; the bigger the arrow, the higher the loading (full size at 100 % and above); thicker lines carry more MW. Beside each line: MW · Mvar at the sending end · loading %. Loads hang below the bus bar and generators stand above it; their MW · Mvar are next to them. Zoom in for more detail. Drag to pan, scroll to zoom.") : null,
       adv && !flow ? h("span", {}, "Branch ends: P [MW] · Q [Mvar] · I [kA], positive out of the bus · Loads (consumed) and generators (delivered): P · Q · I · Bus boxes: U [kV] · u [pu] · angle [°] · External grid: P · Q · I. Drag to pan, scroll to zoom.") : null));
   if (keep) requestAnimationFrame(() => window.scrollTo({ top: Math.max(0, card.getBoundingClientRect().top + window.scrollY - 80) }));
   requestAnimationFrame(go);
