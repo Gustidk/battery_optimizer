@@ -493,7 +493,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "b5c2c3e9e4";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "6a61e57cfa";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -876,6 +876,11 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq) {
   const LW = 70, LH = 11;                                         // every value box has the same fixed size, so the layout does not depend on the numbers
   const reqs = [], obst = [], segs = [], arrows = [];            // value boxes to place, things they must not cover, line sample points, arrows
   // ---- branches
+  const bsegs = [], usedAnch = [];
+  for (const [kind, list, fa, fb] of [["line", spec.lines, "from_bus", "to_bus"], ["trafo", spec.trafos, "hv_bus", "lv_bus"]]) for (const e of list) {
+    const A = busById(e[fa]), B = busById(e[fb]); if (!A || !B) continue; const [x1, y1] = P(A), [x2, y2] = P(B); bsegs.push({ id: `${kind}:${e.id}`, x1, y1, x2, y2 });
+  }
+  const dseg = (px, py, s) => { const dx = s.x2 - s.x1, dy = s.y2 - s.y1, l2 = dx * dx + dy * dy || 1; const u = Math.max(0, Math.min(1, ((px - s.x1) * dx + (py - s.y1) * dy) / l2)); return Math.hypot(px - (s.x1 + u * dx), py - (s.y1 + u * dy)); };
   const br = (kind, e, a, b) => {
     const A = busById(a), B = busById(b); if (!A || !B) return;
     const [x1, y1] = P(A), [x2, y2] = P(B); const L = Math.hypot(x2 - x1, y2 - y1);
@@ -886,14 +891,28 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq) {
     const fwd = dd.p_from >= 0, ps = fwd ? dd.p_from : dd.p_to, qs = fwd ? dd.q_from : dd.q_to;
     let ux = (x2 - x1) / L, uy = (y2 - y1) / L; const ox = ux, oy = uy;
     if (!fwd) { ux = -ux; uy = -uy; }
-    const tr = kind === "trafo", mx = (x1 + x2) / 2, my = (y1 + y2) / 2, ax = tr ? mx + ux * 24 : mx, ay = tr ? my + uy * 24 : my;
+    const tr = kind === "trafo", key = `${kind}:${e.id}`;
+    // Where on the line the arrow and value sit: not on top of another line (crossing lines) and not next to another arrow.
+    let t = 0.5;
+    if (!tr) {
+      let bestS = -Infinity;
+      for (const tt of [0.5, 0.4, 0.6, 0.3, 0.7, 0.22, 0.78]) {
+        const px = x1 + (x2 - x1) * tt, py = y1 + (y2 - y1) * tt; let m = Infinity;
+        for (const s of bsegs) if (s.id !== key) m = Math.min(m, dseg(px, py, s));
+        for (const u of usedAnch) m = Math.min(m, Math.hypot(px - u[0], py - u[1]) - 24);
+        if (m >= 14) { t = tt; break; }
+        if (m > bestS) { bestS = m; t = tt; }
+      }
+    }
+    const mx = x1 + (x2 - x1) * t, my = y1 + (y2 - y1) * t, ax = tr ? mx + ux * 24 : mx, ay = tr ? my + uy * 24 : my;
+    if (!tr) usedAnch.push([mx, my]);
     const asz = 4 + 11 * Math.min(1, Math.max(0, dd.loading) / 100);
     if (Math.abs(ps) > 0.0005) arrows.push(arrow(ax, ay, ux, uy, asz, ink));
     obst.push([ax - asz - 2, ay - asz - 2, ax + asz + 2, ay + asz + 2]);
     if (tr) obst.push([mx - 20, my - 14, mx + 20, my + 14]);
     let nx = -oy, ny = ox; if (nx < -0.01 || (Math.abs(nx) <= 0.01 && ny < 0)) { nx = -nx; ny = -ny; }
     const rows = [{ t: `${n2(Math.abs(ps))} MW` }, ...(fq ? [{ t: `${n2(qs)} Mvar` }] : []), { t: `${fmt(dd.loading, 0)} %`, col: heat(dd.loading), bold: true }];
-    reqs.push({ key: `${kind}:${e.id}`, ax: mx, ay: my, w: LW, h: rows.length * LH + 4, pref: Math.atan2(ny, nx), pref2: Math.atan2(-ny, -nx), r0: tr ? 16 : 6, rows });
+    reqs.push({ key, ax: mx, ay: my, w: LW, h: rows.length * LH + 4, pref: Math.atan2(ny, nx), pref2: Math.atan2(-ny, -nx), r0: tr ? 16 : 6, rows });
   };
   for (const l of spec.lines) br("line", l, l.from_bus, l.to_bus);
   for (const t of spec.trafos) br("trafo", t, t.hv_bus, t.lv_bus);
