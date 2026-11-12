@@ -232,6 +232,7 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
 .u-title { text-align: center; font-size: 18px; font-weight: bold; }
 .u-wrap { position: relative; user-select: none; }
 .u-over, .u-under { position: absolute; }
+.vtip { position: absolute; pointer-events: none; z-index: 6; font: 600 11px var(--f-mono); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; white-space: nowrap; }
 .u-under { overflow: hidden; }
 .uplot canvas { display: block; position: relative; width: 100%; height: 100%; }
 .u-axis { position: absolute; }
@@ -493,7 +494,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "c343731285";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "2db6276c7b";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -504,6 +505,27 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const clone = (o) => JSON.parse(JSON.stringify(o));
 // Chart times are UTC clock readings (price and weather files use the same clock); uPlot would otherwise shift them to the browser's time zone.
 const UTC_TZ = (ts) => new Date(ts * 1000 + new Date(ts * 1000).getTimezoneOffset() * 60000);
+// Hover read-out: writes the value of every series next to the hovered data point (also in charts that follow the cursor of another chart).
+const valueTip = () => {
+  const tips = [];
+  const txt = (v) => fmt(v, Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2);
+  return { hooks: {
+    init: (u) => u.series.forEach((s, k) => { if (k === 0) return; const d = document.createElement("div"); d.className = "vtip"; d.style.display = "none"; if (typeof s.stroke === "string") d.style.color = s.stroke; u.over.appendChild(d); tips[k] = d; }),
+    setCursor: (u) => {
+      const i = u.cursor.idx, w = u.over.clientWidth;
+      u.series.forEach((s, k) => {
+        if (k === 0) return; const d = tips[k]; if (!d) return;
+        const v = i == null ? null : u.data[k][i];
+        if (v == null || !isFinite(v) || s.show === false) { d.style.display = "none"; return; }
+        const x = u.valToPos(u.data[0][i], "x"), y = u.valToPos(v, s.scale || "y");
+        d.textContent = txt(v); d.style.display = "block";
+        const dw = d.offsetWidth, dh = d.offsetHeight;
+        d.style.left = (x + 10 + dw > w ? x - 10 - dw : x + 10) + "px";
+        d.style.top = Math.max(0, Math.min(u.over.clientHeight - dh, k === 1 ? y - dh - 4 : y + 4)) + "px";
+      });
+    },
+  } };
+};
 const fmt = (v, d = 1) => (v == null || !isFinite(v) ? "–" : Number(v).toLocaleString("en-GB", { minimumFractionDigits: d, maximumFractionDigits: d }));
 const fmtSigned = (v, d = 1) => (v == null || !isFinite(v) ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "±") + fmt(Math.abs(v), d));
 function h(tag, attrs = {}, ...kids) {
@@ -1859,7 +1881,7 @@ function renderCompare(root, c) {
     h("div", { class: "eyebrow", style: { marginTop: "8px" } }, `Average price by hour of day, ${cur}/MWh`), d2);
   root.append(card);
   const width = () => Math.max(280, d1.clientWidth || root.clientWidth - 40);
-  const mkDay = (el, series, data, height, unit) => { const u = new uPlot({ width: width(), height, padding: [8, 8, 0, 0], legend: { show: false }, cursor: { points: { size: 7 } }, scales: { x: { time: false } },
+  const mkDay = (el, series, data, height, unit) => { const u = new uPlot({ plugins: [valueTip()], width: width(), height, padding: [8, 8, 0, 0], legend: { show: false }, cursor: { points: { size: 7 } }, scales: { x: { time: false } },
     axes: (() => { const ax = axes(unit); ax[0].values = (u2, v) => v.map((q) => String(q).padStart(2, "0") + ":00"); ax[0].splits = () => [0, 3, 6, 9, 12, 15, 18, 21]; return ax; })(), series: [{}, ...series] }, data, el); charts.push(u); return u; };
   const uA = mkDay(d1, [{ stroke: colRev, width: 2, paths: uPlot.paths.stepped({ align: 1 }) }, { stroke: colGrid, width: 2, paths: uPlot.paths.stepped({ align: 1 }) }], [hrs, x.schedule_by_hour_revenue, x.schedule_by_hour_grid], 150, "");
   const uB = mkDay(d2, [{ stroke: colPrice, width: 2, paths: uPlot.paths.stepped({ align: 1 }) }], [hrs, x.price_by_hour], 110, "");
@@ -1898,7 +1920,7 @@ function renderCompare(root, c) {
     h("div", { class: "eyebrow", style: { marginTop: "8px" } }, "Wind speed at 100 m, m/s"), e4,
     h("div", { class: "eyebrow", style: { marginTop: "8px" } }, "Wind turbine production, MW"), e5);
   const key = "cmp-" + Math.random();
-  const mkTs = (el, series, data, height, yr) => { const u = new uPlot({ tzDate: UTC_TZ, width: width(), height, padding: [8, 8, 0, 0], legend: { show: false }, cursor: { sync: { key, setSeries: false }, drag: { x: true, y: false }, points: { size: 7 } },
+  const mkTs = (el, series, data, height, yr) => { const u = new uPlot({ plugins: [valueTip()], tzDate: UTC_TZ, width: width(), height, padding: [8, 8, 0, 0], legend: { show: false }, cursor: { sync: { key, setSeries: false }, drag: { x: true, y: false }, points: { size: 7 } },
     scales: { x: { time: true }, y: yr ? { range: yr } : {} }, axes: axes(""), series: [{}, ...series] }, data, el); charts.push(u); return u; };
   const P = st.mw;
   const uC = mkTs(e1, [{ stroke: colRev, width: 1.5, paths: uPlot.paths.stepped({ align: 1 }) }, { stroke: colGrid, width: 1.5, paths: uPlot.paths.stepped({ align: 1 }) }],
@@ -2050,7 +2072,7 @@ function renderDetail(root, r) {
   };
   const mk = (el, series, data, yr, unit, height, splits) => {
     const width = Math.max(280, el.clientWidth || root.clientWidth - 40);
-    const u = new uPlot({ tzDate: UTC_TZ, width, height, padding: [8, 8, 0, 0], cursor: { sync: { key: syncKey, setSeries: false }, drag: { x: true, y: false }, points: { size: 7 } },
+    const u = new uPlot({ plugins: [valueTip()], tzDate: UTC_TZ, width, height, padding: [8, 8, 0, 0], cursor: { sync: { key: syncKey, setSeries: false }, drag: { x: true, y: false }, points: { size: 7 } },
       legend: { show: false }, scales: { x: { time: true }, y: yr ? { range: yr } : {} }, axes: (() => { const ax = axes(unit); if (splits) ax[1].splits = () => splits; return ax; })(), series: [{}, ...series],
       hooks: { setCursor: [(u) => updReadout(u.cursor.idx)] } }, data, el);
     charts.push(u); return u;
@@ -2292,7 +2314,7 @@ function renderLoadflow(root) {
     { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, font: "11px IBM Plex Mono, monospace", size: 46 }];
   const key = "gfbp-lf-" + Math.random();
   const upd = (u) => { const i = u.cursor.idx; if (i == null) { readout.textContent = ""; return; } const f = Number(sel.value); readout.textContent = `${when(i)} · ${els[f].name}: ${fmt(base.loading[i][f], 1)} % · grid exchange ${fmt(base.tso_mw[i], 2)} MW · losses ${fmt(base.losses_mw[i], 3)} MW`; };
-  const mk = (el, data, h0) => { const u = new uPlot({ tzDate: UTC_TZ, width: Math.max(280, el.clientWidth || root.clientWidth - 40), height: h0, padding: [8, 8, 0, 0], legend: { show: false },
+  const mk = (el, data, h0) => { const u = new uPlot({ plugins: [valueTip()], tzDate: UTC_TZ, width: Math.max(280, el.clientWidth || root.clientWidth - 40), height: h0, padding: [8, 8, 0, 0], legend: { show: false },
     cursor: { sync: { key }, drag: { x: true, y: false }, points: { size: 7 } }, scales: { x: { time: true } }, axes: axes(), series: [{}, { stroke: colA, width: 1.8 }], hooks: { setCursor: [upd] } }, data, el); charts.push(u); return u; };
   const ld = (f) => [xs, Float64Array.from(base.loading, (row) => row[f])];
   const u1 = mk(c1, ld(worst), 180), u2 = mk(c2, [xs, Float64Array.from(base.tso_mw)], 140);
