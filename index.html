@@ -182,6 +182,8 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
 .off-mode .batonly { display: none !important; }
 #b-fields.disabled { opacity: .45; pointer-events: none; }
 .mapwrap.adv { height: 720px; cursor: grab; }
+.mapov { position: absolute; left: 10px; top: 10px; right: 230px; z-index: 2; display: flex; flex-direction: column; gap: 4px; background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.mapwrap:fullscreen { background: var(--panel); }
 .mapwrap .zoombar { position: absolute; right: 10px; top: 10px; display: flex; gap: 4px; }
 .sld .adv { font: 400 9.5px var(--f-mono); fill: var(--ink); paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
 .sld .advbox { fill: var(--panel); stroke-width: 1.2; }
@@ -485,7 +487,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "491aa2c64b";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "f042f66830";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -696,14 +698,29 @@ const HINTS = {
 };
 function voltColor(kv) { return kv >= 60 ? cssVar("--hv") : kv >= 1 ? cssVar("--mv") : cssVar("--lv"); }
 
+const FLOW_KB = 1.6, FLOW_SY = 0.85;       // power flow view: layout scale at which all text fits, and a vertical squeeze
+/** Fit the whole drawing of the power flow view at a readable size. Makes the map as tall as needed (up to
+    the screen height in full screen) rather than shrinking the text. */
+function fitFlow(svg, spec, wrap, full, topExtra = 0) {
+  const W = wrap.clientWidth || 800;
+  const xs = spec.buses.map((b) => b.x * U), ys = spec.buses.map((b) => b.y * U * FLOW_SY);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const ML = 95, MR = 150, MT = 80 + topExtra, MB = 75;
+  const needW = (x1 - x0) * FLOW_KB + ML + MR, needH = (y1 - y0) * FLOW_KB + MT + MB;
+  if (!full) wrap.style.height = Math.round(Math.min(1400, Math.max(520, needH * Math.min(1, W / needW)))) + "px";
+  else wrap.style.height = "100%";
+  const H = wrap.clientHeight || 720;
+  const s = Math.max(0.3, Math.min(1.15, W / needW, H / needH)), k = s * FLOW_KB;
+  return { k, tx: (W - needW * s) / 2 + ML * s - x0 * k, ty: (H - needH * s) / 2 + MT * s - y0 * k };
+}
 /** Render a network into an <svg>. opts: {view, values: {"line:3": pct}, sel, battery:{bus,p}, readOnly, pending} */
 function renderSLD(svg, spec, opts) {
   let { tx, ty, k } = opts.view;
   // Power flow view: draw everything at one fixed layout scale and zoom the whole drawing as a unit, so
   // text, arrows and symbols keep their spacing when zooming out instead of piling up.
-  const flowZoom = opts.detailMode === "flow" && !!opts.detail, KB = 1.6, zoomS = k / KB;
+  const flowZoom = opts.detailMode === "flow" && !!opts.detail, KB = FLOW_KB, zoomS = k / KB;
   if (flowZoom) { opts = { ...opts, origView: opts.view, view: { tx: 0, ty: 0, k: KB } }; ({ tx, ty, k } = opts.view); }
-  const P = (b) => [tx + b.x * U * k, ty + b.y * U * k];
+  const P = (b) => [tx + b.x * U * k, ty + b.y * U * k * (flowZoom ? FLOW_SY : 1)];
   const vals = opts.values || {};
   const ink2 = cssVar("--ink-2"), muted = cssVar("--muted"), bat = cssVar("--battery"), accent = cssVar("--accent");
   const attach = new Map(spec.buses.map((b) => [b.id, []]));
@@ -2010,6 +2027,7 @@ function mapCard(r, opts = {}) {
   if (keep) hour = Math.min(T - 1, Math.max(0, keep.hour));
   let mode = r ? (keep && keep.mode === "before" ? "before" : "after") : "before"; let timer = null; let view = null; let detail = null; let want = null; let busy = false;
   const wrap = h("div", { class: "mapwrap" + (adv ? " adv" : "") });
+  const ov = h("div", { class: "mapov" });                                           // controls shown on top of the map in full screen
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("class", "sld"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Network at the selected hour"); wrap.append(svg);
   const slider = h("input", { type: "range", min: 0, max: T - 1, value: hour, "aria-label": "Hour" });
   const lbl = h("span", { class: "mono", style: { minWidth: "150px" } });
@@ -2043,6 +2061,7 @@ function mapCard(r, opts = {}) {
     const vals = {}; const L = mode === "after" ? r.loading_after[hour] : base.loading[hour];
     els.forEach((e, i) => (vals[elemKey(e.type, e.id)] = L[i]));
     const keepSpec = S.spec; S.spec = spec;              // renderSLD looks buses up in S.spec
+    if (!view && flow) view = fitFlow(svg, spec, wrap, document.fullscreenElement === wrap, document.fullscreenElement === wrap ? 70 : 0);
     if (!view) {
       view = fitView(svg, spec, adv ? 70 : 46);
       if (adv && view.k < 1.55) {                       // zoom in so labels have room; pan to explore
@@ -2085,6 +2104,14 @@ function mapCard(r, opts = {}) {
   if (adv) {                                            // pan and zoom for reading the labels
     const zb = h("div", { class: "zoombar" });
     const zoom = (f, px, py) => { const rc = svg.getBoundingClientRect(); px ??= rc.width / 2; py ??= rc.height / 2; const k = Math.min(5, Math.max(0.15, view.k * f)), g = k / view.k; view = { k, tx: px - (px - view.tx) * g, ty: py - (py - view.ty) * g }; draw(); };
+    if (flow) {
+      const mvCtl = (on) => { const anchor = errNote; if (on) { ov.append(ctl, sumBox); wrap.append(ov); } else { ov.remove(); card.insertBefore(ctl, anchor); card.insertBefore(sumBox, anchor); } };
+      const fsBtn = h("button", { class: "btn", title: "Fill the screen so the whole network and all values are readable at once", onclick: () => { if (document.fullscreenElement) document.exitFullscreen(); else if (wrap.requestFullscreen) wrap.requestFullscreen().catch(() => {}); } }, "Full screen");
+      zb.append(fsBtn);
+      const onFs = () => { const on = document.fullscreenElement === wrap; fsBtn.textContent = on ? "Exit full screen" : "Full screen"; mvCtl(on); view = null; draw(); };
+      document.addEventListener("fullscreenchange", onFs);
+      charts.push({ destroy: () => { document.removeEventListener("fullscreenchange", onFs); if (document.fullscreenElement === wrap) document.exitFullscreen().catch(() => {}); } });
+    }
     zb.append(h("button", { class: "btn", "aria-label": "Zoom in", onclick: () => zoom(1.25) }, "+"), h("button", { class: "btn", "aria-label": "Zoom out", onclick: () => zoom(0.8) }, "−"), h("button", { class: "btn", onclick: () => { view = null; draw(); } }, "Fit"));
     wrap.append(zb);
     let drag = null;
@@ -2110,7 +2137,8 @@ function mapCard(r, opts = {}) {
   if (keep) requestAnimationFrame(() => window.scrollTo({ top: Math.max(0, card.getBoundingClientRect().top + window.scrollY - 80) }));
   requestAnimationFrame(go);
   let lastW = 0;
-  const ro = new ResizeObserver(() => { const w = wrap.clientWidth; if (Math.abs(w - lastW) > 4) { lastW = w; view = null; draw(); } }); ro.observe(wrap); charts.push({ destroy: () => ro.disconnect() });
+  let lastH = 0;
+  const ro = new ResizeObserver(() => { const w = wrap.clientWidth, hh = wrap.clientHeight; if (Math.abs(w - lastW) > 4 || (document.fullscreenElement === wrap && Math.abs(hh - lastH) > 4)) { lastW = w; lastH = hh; view = null; draw(); } }); ro.observe(wrap); charts.push({ destroy: () => ro.disconnect() });
   return card;
 }
 
