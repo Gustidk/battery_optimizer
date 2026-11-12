@@ -383,6 +383,15 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
           <label class="f">Power levels (piecewise)<input id="m-levels" type="number" step="2" min="3" max="21"></label>
         </div>
       </div>
+      <div class="card span12" id="card-scenario">
+        <h3>Scenario: scale the loads and the green generation</h3>
+        <p class="sub" style="margin:6px 0 10px;font-size:13px">Two multipliers applied to the whole network, so you can change how much green energy there is compared with the demand. 1 = the network as drawn. The loads’ reactive power follows the loads.</p>
+        <div class="grid3">
+          <label class="f"><span>Loads <span class="u">× every load</span></span><input id="sc-load" type="number" step="0.1" min="0"></label>
+          <label class="f"><span>DER (PV and wind) <span class="u">× every PV and wind generator</span></span><input id="sc-der" type="number" step="0.5" min="0"></label>
+          <div class="f"><span class="u" style="display:block">With these factors</span><div id="sc-preview" class="muted" style="font-size:13px;margin-top:6px"></div></div>
+        </div>
+      </div>
       <div class="card span12 batonly" id="card-price">
         <div class="row"><h3>Electricity price</h3><span class="spacer"></span>
           <label class="switch"><input type="checkbox" id="p-on" role="switch"><span class="track" aria-hidden="true"></span><span>Compare with a revenue plan</span></label></div>
@@ -475,7 +484,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "f898bba729";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "d8bc024014";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -576,7 +585,7 @@ const DEFAULT_STUDY = {
   place: "Aarhus", lat: 56.15, lon: 10.21, start: "2025-01-13", days: 7,
   mw: 4, mwh: 16, eta_c: 95, eta_d: 95, soc: 50, bus: 8,
   objective: "minmax", model: "piecewise", wl: 1, wt: 1, probe: 2, levels: 9, mode: "one", battery: true,
-  price: false, area: "DK1", wear: 0,
+  price: false, area: "DK1", wear: 0, load_f: 1, der_f: 1,
 };
 const PLACES = { Aarhus: [56.15, 10.21], "Copenhagen": [55.68, 12.57], Odense: [55.40, 10.39], Aalborg: [57.05, 9.92], Esbjerg: [55.48, 8.45], Custom: null };
 const S = {
@@ -1260,13 +1269,21 @@ function bindNum(id, key, scale = 1) {
   const el = $(id); el.value = S.study[key] * scale;
   el.onchange = () => { const v = Number(el.value); if (isFinite(v)) { S.study[key] = v / scale; saveStudy(); S.dirty = true; updateEstimate(); onPeriodChange(key); } };
 }
+function renderScenarioPreview() {
+  const el = $("#sc-preview"); if (!el || !S.spec) return;
+  const sum = (arr) => (arr || []).reduce((t, x) => t + Number(x.p_mw || 0), 0);
+  const L = sum(S.spec.loads), pv = sum((S.spec.sgens || []).filter((g) => String(g.type || "PV").toUpperCase() === "PV"));
+  const wp = sum((S.spec.sgens || []).filter((g) => ["WP", "WIND"].includes(String(g.type || "").toUpperCase())));
+  const lf = Number(S.study.load_f), df = Number(S.study.der_f);
+  el.textContent = `Rated load ${fmt(L * lf, 1)} MW · installed PV ${fmt(pv * df, 2)} MW · wind ${fmt(wp * df, 2)} MW · installed DER is ${fmt(L * lf > 0 ? 100 * (pv + wp) * df / (L * lf) : 0, 0)} % of rated load`;
+}
 function onPeriodChange(key) { if (["lat", "lon", "start", "days"].includes(key)) renderWeatherStatus(); }
 function syncStudyForm() {
   if (!S.spec) return;
   const bs = $("#b-bus"); bs.innerHTML = "";
   for (const b of candidates()) bs.append(h("option", { value: b.id, selected: Number(S.study.bus) === b.id ? true : null }, b.name || `Bus ${b.id}`));
   bs.onchange = () => { S.study.bus = Number(bs.value); saveStudy(); drawEditor(); };
-  renderProfiles(); updateEstimate();
+  renderProfiles(); updateEstimate(); renderScenarioPreview();
 }
 function initStudyForm() {
   const pl = $("#w-place");
@@ -1279,6 +1296,9 @@ function initStudyForm() {
   $("#w-quick").onchange = (ev) => { const d = Number(ev.target.value); if (!d) return; S.study.days = d; $("#w-days").value = d; if (d >= 365) { S.study.start = S.study.start.slice(0, 4) + "-01-01"; st.value = S.study.start; } ev.target.value = ""; saveStudy(); renderWeatherStatus(); updateEstimate(); };
   bindNum("#b-mw", "mw"); bindNum("#b-mwh", "mwh"); bindNum("#b-etac", "eta_c"); bindNum("#b-etad", "eta_d"); bindNum("#b-soc", "soc");
   bindNum("#o-wl", "wl"); bindNum("#o-wt", "wt"); bindNum("#m-probe", "probe"); bindNum("#m-levels", "levels");
+  bindNum("#sc-load", "load_f"); bindNum("#sc-der", "der_f");
+  for (const id of ["#sc-load", "#sc-der"]) $(id).addEventListener("input", () => { const k = id === "#sc-load" ? "load_f" : "der_f"; const v = Number($(id).value); if (isFinite(v) && v >= 0) { S.study[k] = v; renderScenarioPreview(); } });
+  renderScenarioPreview();
   initPriceForm();
   for (const r of $$('input[name="obj"]')) { r.checked = r.value === S.study.objective; r.onchange = () => { S.study.objective = r.value; saveStudy(); $("#weights").hidden = r.value !== "quadratic_peak"; }; }
   $("#weights").hidden = S.study.objective !== "quadratic_peak";
@@ -1494,7 +1514,8 @@ function setProgress(stage, frac) {
 function settingsPayload() {
   const s = S.study;
   return { battery_mw: s.mw, battery_mwh: s.mwh, eta_c: s.eta_c / 100, eta_d: s.eta_d / 100, soc_init: s.soc / 100, dt_h: 1,
-    probe_mw: s.probe, n_levels: Math.max(3, Math.round(s.levels) | 1), weight_line: s.wl, weight_trafo: s.wt, throughput_cost: s.price ? s.wear : 0 };
+    probe_mw: s.probe, n_levels: Math.max(3, Math.round(s.levels) | 1), weight_line: s.wl, weight_trafo: s.wt, throughput_cost: s.price ? s.wear : 0,
+    load_factor: s.load_f, der_factor: s.der_f };
 }
 function runError(msg) { $("#r-msg").innerHTML = ""; $("#r-msg").append(h("div", { class: "note err", style: { marginTop: "10px" }, text: msg })); }
 async function runStudy() {
@@ -1502,6 +1523,7 @@ async function runStudy() {
   if (!engine || !engine.ready) { runError("The engine is still starting. Try again in a moment."); return; }
   const s = S.study; $("#r-msg").innerHTML = "";
   const withBat = s.battery !== false;
+  if (!(s.load_f >= 0) || !(s.der_f >= 0)) return runError("The load and DER factors must be zero or more.");
   if (withBat && !(s.mw > 0 && s.mwh > 0)) return runError("Battery power and energy must be above zero.");
   if (withBat && (s.eta_c <= 0 || s.eta_c > 100 || s.eta_d <= 0 || s.eta_d > 100)) return runError("Efficiencies must be between 0 and 100 %.");
   if (withBat && s.mode === "one" && !busById(s.bus)) return runError("Choose a bus for the battery.");
@@ -1591,17 +1613,46 @@ function renderResults() {
   const title = R.kind === "loadflow" ? "Load flow" : R.kind === "all" ? "Where should the battery go?" : `Battery at ${R.single.bus_name}`;
   const chips = R.kind === "loadflow" ? [h("span", { class: "chip" }, `${m.weather.hours} hours`), h("span", { class: "chip" }, "No battery")]
     : [h("span", { class: "chip" }, `${fmt(st.mw, 1)} MW / ${fmt(st.mwh, 1)} MWh`), h("span", { class: "chip" }, objTxt), h("span", { class: "chip" }, modelTxt)];
+  if ((st.load_f ?? 1) !== 1 || (st.der_f ?? 1) !== 1) chips.push(h("span", { class: "chip" }, `Loads ×${fmt(st.load_f ?? 1, 2)} · DER ×${fmt(st.der_f ?? 1, 2)}`));
   const head = h("div", { class: "row" },
     h("div", { style: { minWidth: 0 } }, h("span", { class: "eyebrow" }, sub), h("h2", {}, title)),
     h("span", { class: "spacer" }), ...chips, advSw);
   root.append(head);
   if (S.dirty) root.append(h("div", { class: "note warn" }, "The network or the study settings changed after this run. Run the study again to update the results."));
   if (R.kind === "loadflow") { renderLoadflow(root); return; }
+  if (R.base.energy) renderEnergy(root, R.base.energy);
   if (R.kind === "all") renderRanking(root);
   const detail = h("div", { id: "detail", style: { display: "flex", flexDirection: "column", gap: "14px" } });
   root.append(detail);
   if (R.compare) renderCompare(detail, R.compare);
   if (R.single) renderDetail(detail, R.single);
+}
+
+// ============================================================ energy balance: where the energy comes from and goes
+function renderEnergy(root, e) {
+  const card = h("div", { class: "card" });
+  const rat = e.der_to_load_ratio, ratTxt = fmt(rat, rat < 0.1 ? 3 : 2);
+  card.append(h("div", { class: "chart-title" }, h("h3", {}, "Where the energy comes from and where it goes"),
+    h("span", { class: "muted" }, `Whole period, without the battery. Loads ×${fmt(e.load_factor, 2)}, DER ×${fmt(e.der_factor, 2)}. Supply is the DER generation plus the import from the transmission grid (TSO).`)));
+  const kp = (label, big, small, note, cls) => h("div", { class: "kpi" }, h("div", { class: "eyebrow" }, label),
+    h("div", { class: "big" }, h("span", {}, big), small ? h("span", { class: "from" }, small) : null), h("div", { class: "d " + (cls || "") }, note));
+  card.append(h("div", { class: "kpis", style: { marginTop: "10px" } },
+    kp("From DER", `${fmt(e.der_share_of_supply_pct, 1)} %`, "of supply", `PV ${fmt(e.pv_share_of_supply_pct, 1)} % · wind ${fmt(e.wind_share_of_supply_pct, 1)} % · ${fmt(e.der_mwh, 0)} MWh`),
+    kp("From the TSO", `${fmt(e.tso_share_of_supply_pct, 1)} %`, "of supply", `${fmt(e.tso_import_mwh, 0)} MWh imported`),
+    kp("DER ÷ load", ratTxt, "energy ratio", `DER generates ${fmt(100 * rat, 1)} % of what the loads use · DER above load in ${e.hours_der_above_load} h`),
+    kp("DER sent back to the TSO", fmt(e.tso_export_mwh, 0), "MWh", `${fmt(e.der_exported_pct_of_der, 1)} % of DER · ${e.hours_export} hours with export`, e.hours_export ? "bad" : "")));
+  const seg = (parts, total) => { const bar = h("div", { style: { display: "flex", height: "26px", borderRadius: "4px", overflow: "hidden", background: cssVar("--grid") } });
+    parts.filter((p) => p[1] > 0).forEach(([name, v, col]) => { const d = h("div", { title: `${name}: ${fmt(v, 0)} MWh (${fmt(total > 0 ? 100 * v / total : 0, 1)} %)` }); d.style.width = (total > 0 ? 100 * v / total : 0) + "%"; d.style.background = col; bar.append(d); });
+    const leg = h("div", { class: "leg", style: { marginTop: "6px", flexWrap: "wrap" } });
+    parts.filter((p) => p[1] > 0).forEach(([name, v, col]) => { const s = h("span", {}); const i = h("i"); i.style.background = col; s.append(i, `${name} ${fmt(v, 0)} MWh (${fmt(total > 0 ? 100 * v / total : 0, 1)} %)`); leg.append(s); });
+    return h("div", {}, bar, leg); };
+  const outTotal = e.load_mwh + e.losses_mwh + e.tso_export_mwh;
+  card.append(h("div", { class: "eyebrow", style: { marginTop: "14px", marginBottom: "6px" } }, "Where the energy comes from"),
+    seg([["PV", e.pv_mwh, cssVar("--warn")], ["Wind", e.wind_mwh, cssVar("--lv")], ["Constant DER", e.const_mwh, cssVar("--before")], ["TSO import", e.tso_import_mwh, cssVar("--hv")]], e.supply_mwh),
+    h("div", { class: "eyebrow", style: { marginTop: "14px", marginBottom: "6px" } }, "Where the energy goes"),
+    seg([["Loads", e.load_mwh, cssVar("--after")], ["Network losses", e.losses_mwh, cssVar("--crit")], ["Export to the TSO", e.tso_export_mwh, cssVar("--battery")]], outTotal),
+    h("p", { class: "muted", style: { fontSize: "12.5px", margin: "10px 0 0" } }, `Peak DER output ${fmt(e.peak_der_mw, 2)} MW against a peak load of ${fmt(e.peak_load_mw, 2)} MW. Grid exchange peaks at ${fmt(e.tso_peak_import_mw, 2)} MW import and ${fmt(e.tso_peak_export_mw, 2)} MW export. Shares are calculated hour by hour, so an hour with export counts the exported energy as DER that left the network.`));
+  root.append(card);
 }
 
 // ============================================================ revenue plan vs grid-friendly plan
@@ -1982,6 +2033,7 @@ function renderLoadflow(root) {
     h("span", { class: "chip" }, `Exchange with the transmission grid: up to ${fmt(lf.tso_max_import_mw, 2)} MW import${lf.tso_max_export_mw > 0 ? `, ${fmt(lf.tso_max_export_mw, 2)} MW export` : ""}`),
     h("span", { class: "chip" }, `Average element peak ${fmt(lf.mean_of_max_pct, 2)} %`),
     h("span", { class: "chip" }, `Solved in ${fmt(lf.timing.loadflow_s, 1)} s`)));
+  if (base.energy) renderEnergy(root, base.energy);
   // time series
   const worst = lf.peaks.reduce((b, v, i) => (v > lf.peaks[b] ? i : b), 0);
   const ts = h("div", { class: "card" });
