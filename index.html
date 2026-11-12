@@ -487,7 +487,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "22c93484f8";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "39d71c6527";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -698,29 +698,14 @@ const HINTS = {
 };
 function voltColor(kv) { return kv >= 60 ? cssVar("--hv") : kv >= 1 ? cssVar("--mv") : cssVar("--lv"); }
 
-const FLOW_KB = 1.6, FLOW_SY = 0.85;       // power flow view: layout scale at which all text fits, and a vertical squeeze
-/** Fit the whole drawing of the power flow view at a readable size. Makes the map as tall as needed (up to
-    the screen height in full screen) rather than shrinking the text. */
-function fitFlow(svg, spec, wrap, full, topExtra = 0) {
-  const W = wrap.clientWidth || 800;
-  const xs = spec.buses.map((b) => b.x * U), ys = spec.buses.map((b) => b.y * U * FLOW_SY);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-  const ML = 95, MR = 150, MT = 80 + topExtra, MB = 75;
-  const needW = (x1 - x0) * FLOW_KB + ML + MR, needH = (y1 - y0) * FLOW_KB + MT + MB;
-  if (!full) wrap.style.height = Math.round(Math.min(1400, Math.max(520, needH * Math.min(1, W / needW)))) + "px";
-  else wrap.style.height = "100%";
-  const H = wrap.clientHeight || 720;
-  const s = Math.max(0.3, Math.min(1.15, W / needW, H / needH)), k = s * FLOW_KB;
-  return { k, tx: (W - needW * s) / 2 + ML * s - x0 * k, ty: (H - needH * s) / 2 + MT * s - y0 * k };
-}
 /** Render a network into an <svg>. opts: {view, values: {"line:3": pct}, sel, battery:{bus,p}, readOnly, pending} */
 function renderSLD(svg, spec, opts) {
   let { tx, ty, k } = opts.view;
-  // Power flow view: draw everything at one fixed layout scale and zoom the whole drawing as a unit, so
-  // text, arrows and symbols keep their spacing when zooming out instead of piling up.
-  const flowZoom = opts.detailMode === "flow" && !!opts.detail, KB = FLOW_KB, zoomS = k / KB;
-  if (flowZoom) { opts = { ...opts, origView: opts.view, view: { tx: 0, ty: 0, k: KB } }; ({ tx, ty, k } = opts.view); }
-  const P = (b) => [tx + b.x * U * k, ty + b.y * U * k * (flowZoom ? FLOW_SY : 1)];
+  // Power flow view: the drawing is built relative to its own origin and moved into place with one translate,
+  // so the automatic label placement (which depends on the zoom only) can be reused while panning.
+  const flowZoom = opts.detailMode === "flow" && !!opts.detail, tx0 = tx, ty0 = ty;
+  if (flowZoom) { tx = 0; ty = 0; }
+  const P = (b) => [tx + b.x * U * k, ty + b.y * U * k];
   const vals = opts.values || {};
   const ink2 = cssVar("--ink-2"), muted = cssVar("--muted"), bat = cssVar("--battery"), accent = cssVar("--accent");
   const attach = new Map(spec.buses.map((b) => [b.id, []]));
@@ -773,7 +758,7 @@ function renderSLD(svg, spec, opts) {
     const [x, y] = P(b); const att = attach.get(b.id) || [];
     const sz = Math.min(1, Math.max(0.5, k * 1.1));
     const flowM = opts.detailMode === "flow" && !!opts.detail;       // loads below the bus bar, generators above it
-    const step = opts.detail ? (flowM ? 68 : 46) : 13;
+    const step = opts.detail ? (flowM ? 26 : 46) : 13;
     const nLoad = att.filter((q) => q.kind === "load").length;
     const hl = Math.max(20, 10 + (flowM ? Math.max(nLoad, att.length - nLoad) : att.length) * step) * sz; hlOf.set(b.id, hl);
     const col = voltColor(b.vn_kv);
@@ -814,8 +799,8 @@ function renderSLD(svg, spec, opts) {
     else if (k > 0.75 && !opts.readOnly) out.push(`<text class="lbl kv" x="${x - hl - 6}" y="${y + 16}" text-anchor="end">${fmt(b.vn_kv, b.vn_kv < 1 ? 2 : 0)} kV</text>`);
     out.push(`<line class="hit" data-k="bus:${b.id}" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16"/>`);
   }
-  if (opts.detail) (opts.detailMode === "flow" ? flowLabels : advancedLabels)(out, spec, opts.detail, P, hlOf, attach, opts.battery, flowZoom ? zoomS : 1);
-  svg.innerHTML = flowZoom ? `<g transform="translate(${opts.origView.tx} ${opts.origView.ty}) scale(${zoomS})">${out.join("")}</g>` : out.join("");
+  if (opts.detail) (opts.detailMode === "flow" ? flowLabels : advancedLabels)(out, spec, opts.detail, P, hlOf, attach, opts.battery, k, opts.layoutCache);
+  svg.innerHTML = flowZoom ? `<g transform="translate(${tx0} ${ty0})">${out.join("")}</g>` : out.join("");
 }
 /** PowerFactory-style result boxes: P [MW], Q [Mvar], I [kA] at both ends of every branch
     (positive = flowing out of that bus into the branch) and U [kV], u [pu], angle [deg] per bus. */
@@ -866,65 +851,124 @@ function advancedLabels(out, spec, D, P, hlOf, attach, battery) {
 }
 /** Power flow view: an arrow on every line and transformer in the direction of the active power,
     with MW, Mvar (at the sending end) and loading %; MW and Mvar on every load and generator. */
-function flowLabels(out, spec, D, P, hlOf, attach, battery, k) {
+function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache) {
   const n2 = (v) => { const a = Math.abs(v); return fmt(v, a >= 100 ? 0 : a >= 10 ? 1 : 2); };
-  const panel = cssVar("--panel"), ink = cssVar("--ink");
+  const panel = cssVar("--panel"), ink = cssVar("--ink"), muted = cssVar("--muted");
   const arrow = (x, y, ux, uy, s, col) => {                       // open arrow with a shaft, unlike the filled load symbol
     const tx = x + ux * s, ty = y + uy * s, bx = x - ux * s, by = y - uy * s, hx = ux * s * 0.8, hy = uy * s * 0.8, nx = -uy * s * 0.7, ny = ux * s * 0.7;
     const d = `M${bx} ${by}L${tx} ${ty}M${tx - hx + nx} ${ty - hy + ny}L${tx} ${ty}L${tx - hx - nx} ${ty - hy - ny}`;
     return `<path d="${d}" fill="none" stroke="${panel}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
   };
-  // Level of detail: the text only grows with zoom through the spacing, so show less when there is less room.
-  const s = k;                                                    // zoom of the whole drawing (1 = layout size)
-  const symLevel = s >= 0.7 ? 2 : s >= 0.45 ? 1 : 0;             // 2 = MW and Mvar, 1 = MW, 0 = arrows only
-  const lineLevel = s >= 0.7 ? 3 : s >= 0.45 ? 2 : s >= 0.28 ? 1 : 0;
+  const LW = 70, LH = 11;                                         // every value box has the same fixed size, so the layout does not depend on the numbers
+  const reqs = [], obst = [], segs = [], arrows = [];            // value boxes to place, things they must not cover, line sample points, arrows
+  // ---- branches
   const br = (kind, e, a, b) => {
-    const d = D.branches[elemKey(kind, e.id)]; const A = busById(a), B = busById(b);
-    if (!d || !A || !B) return;
+    const A = busById(a), B = busById(b); if (!A || !B) return;
+    const [x1, y1] = P(A), [x2, y2] = P(B); const L = Math.hypot(x2 - x1, y2 - y1);
+    for (let d = 0; d <= L; d += 6) segs.push([x1 + (x2 - x1) * d / (L || 1), y1 + (y2 - y1) * d / (L || 1)]);
+    const dd = D.branches[elemKey(kind, e.id)]; if (!dd) return;
     const sw = kind === "line" ? lineSwitch(e.id) : null; if (sw && !sw.closed) return;
-    const [x1, y1] = P(A), [x2, y2] = P(B); const L = Math.hypot(x2 - x1, y2 - y1); if (L < 18) return;
-    const fwd = d.p_from >= 0, ps = fwd ? d.p_from : d.p_to, qs = fwd ? d.q_from : d.q_to;
+    if (L < 18) return;
+    const fwd = dd.p_from >= 0, ps = fwd ? dd.p_from : dd.p_to, qs = fwd ? dd.q_from : dd.q_to;
     let ux = (x2 - x1) / L, uy = (y2 - y1) / L; const ox = ux, oy = uy;
     if (!fwd) { ux = -ux; uy = -uy; }
-    const nA = (attach.get(Number(a)) || []).length, nB = (attach.get(Number(b)) || []).length;
-    const t = kind === "trafo" ? 0.5 : nA > nB ? 0.66 : nB > nA ? 0.34 : 0.5;          // away from the bus that carries the load and generator labels
-    const mx = x1 + (x2 - x1) * t, my = y1 + (y2 - y1) * t;
-    const tr = kind === "trafo", ax = tr ? mx + ux * 24 : mx, ay = tr ? my + uy * 24 : my;      // keep the arrow clear of the transformer circles
-    if (Math.abs(ps) > 0.0005) out.push(arrow(ax, ay, ux, uy, 4 + 11 * Math.min(1, Math.max(0, d.loading) / 100), ink));
-    const lines = Math.min(lineLevel, L >= 110 ? 3 : L >= 70 ? 2 : L >= 40 ? 1 : 0); if (!lines) return;
+    const tr = kind === "trafo", mx = (x1 + x2) / 2, my = (y1 + y2) / 2, ax = tr ? mx + ux * 24 : mx, ay = tr ? my + uy * 24 : my;
+    const asz = 4 + 11 * Math.min(1, Math.max(0, dd.loading) / 100);
+    if (Math.abs(ps) > 0.0005) arrows.push(arrow(ax, ay, ux, uy, asz, ink));
+    obst.push([ax - asz - 2, ay - asz - 2, ax + asz + 2, ay + asz + 2]);
+    if (tr) obst.push([mx - 20, my - 14, mx + 20, my + 14]);
     let nx = -oy, ny = ox; if (nx < -0.01 || (Math.abs(nx) <= 0.01 && ny < 0)) { nx = -nx; ny = -ny; }
-    if (Math.abs(oy) > 0.5) { nx = -1; ny = 0; }                                  // steep lines: label to the left, away from loads under the bus
-    const off = tr ? 24 : 11, px = mx + nx * off, py = my + ny * off;
-    const anchor = nx < -0.3 ? "end" : nx > 0.3 ? "start" : "middle";
-    const rows = [];
-    if (lines === 3) rows.push(`${n2(Math.abs(ps))} MW`, `${n2(qs)} Mvar`);
-    else if (lines === 2) rows.push(`${n2(Math.abs(ps))} MW`);
-    rows.push(`<pct>`);
-    const top = py - 5.5 * (rows.length - 1) + (ny > 0.5 ? 14 : 0);
-    out.push(`<text class="flow" text-anchor="${anchor}">${rows.map((r, q) => `<tspan x="${px}" y="${top + q * 11}"${r === "<pct>" ? ` style="fill:${heat(d.loading)};font-weight:700"` : ""}>${r === "<pct>" ? fmt(d.loading, 0) + " %" : r}</tspan>`).join("")}</text>`);
+    reqs.push({ key: `${kind}:${e.id}`, ax: mx, ay: my, w: LW, h: 3 * LH + 4, pref: Math.atan2(ny, nx), pref2: Math.atan2(-ny, -nx), r0: tr ? 16 : 6,
+      rows: [{ t: `${n2(Math.abs(ps))} MW` }, { t: `${n2(qs)} Mvar` }, { t: `${fmt(dd.loading, 0)} %`, col: heat(dd.loading), bold: true }] });
   };
   for (const l of spec.lines) br("line", l, l.from_bus, l.to_bus);
   for (const t of spec.trafos) br("trafo", t, t.hv_bus, t.lv_bus);
+  // ---- buses, loads, generators, external grid, battery
   const cLoad = cssVar("--after"), cDer = cssVar("--lv");
   for (const b of spec.buses) {
-    const [, y] = P(b);
+    const [x, y] = P(b), hl = hlOf.get(b.id) || 20;
+    obst.push([x - hl - 2, y - 5, x + hl + 2, y + 5]);
+    const nm = String(b.name || `Bus ${b.id}`); obst.push([x - hl - 8 - nm.length * 6.2, y - 8, x - hl - 4, y + 9]);
     for (const a of attach.get(b.id) || []) {
       const d = a.kind === "load" ? D.loads[a.e.id] : D.sgens[a.e.id]; if (!d || a.ox == null) continue;
       const col = a.kind === "load" ? cLoad : cDer, up = !!a.up;
-      // loads hang below the bus bar (power flows away from it), generators stand above it (power flows into it)
-      if (Math.abs(d.p) > 0.0005) out.push(arrow(a.ox, up ? y - 7 : y + 7, 0, d.p >= 0 ? 1 : -1, 5, col));   // down = away from the bar (load) or into it (generator)
-      if (!symLevel) continue;
-      const rows = symLevel === 2 ? [`${n2(d.p)} MW`, `${n2(d.q)} Mvar`] : [`${n2(d.p)} MW`];
-      const base = up ? y - 28 - (rows.length - 1) * 11 : y + 36;
-      out.push(`<text class="flow" text-anchor="middle" style="fill:${col}">${rows.map((r, q) => `<tspan x="${a.ox}" y="${base + q * 11}">${r}</tspan>`).join("")}</text>`);
+      if (Math.abs(d.p) > 0.0005) arrows.push(arrow(a.ox, up ? y - 7 : y + 7, 0, d.p >= 0 ? 1 : -1, 5, col));
+      obst.push([a.ox - 8, up ? y - 26 : y, a.ox + 8, up ? y : y + 26]);
+      reqs.push({ key: `${a.kind}:${a.e.id}`, ax: a.ox, ay: up ? y - 26 : y + 26, w: LW, h: 2 * LH + 4, pref: up ? -Math.PI / 2 : Math.PI / 2, pref2: null, r0: 3,
+        rows: [{ t: `${n2(d.p)} MW`, col }, { t: `${n2(d.q)} Mvar`, col }], col });
     }
   }
   for (const g of spec.ext_grids) {
     const d = D.ext[Number(g.bus)]; const b = busById(g.bus); if (!d || !b) continue;
     const [x, y] = P(b);
-    if (Math.abs(d.p) > 0.0005) out.push(arrow(x, y - 8, 0, d.p >= 0 ? 1 : -1, 5, ink));
-    out.push(`<text class="flow" text-anchor="start"><tspan x="${x + 14}" y="${y - 33}">${d.p >= 0 ? "TSO import" : "TSO export"}</tspan><tspan x="${x + 14}" y="${y - 22}">${n2(Math.abs(d.p))} MW</tspan><tspan x="${x + 14}" y="${y - 11}">${n2(d.q)} Mvar</tspan></text>`);
+    if (Math.abs(d.p) > 0.0005) arrows.push(arrow(x, y - 8, 0, d.p >= 0 ? 1 : -1, 5, ink));
+    obst.push([x - 11, y - 36, x + 11, y]);
+    reqs.push({ key: `ext:${g.bus}`, ax: x + 11, ay: y - 24, w: LW, h: 3 * LH + 4, pref: 0, pref2: null, r0: 3,
+      rows: [{ t: d.p >= 0 ? "TSO import" : "TSO export" }, { t: `${n2(Math.abs(d.p))} MW` }, { t: `${n2(d.q)} Mvar` }] });
   }
+  if (battery) { const b = busById(battery.bus); if (b) { const [x, y] = P(b), hl = hlOf.get(b.id) || 20; obst.push([x - hl - 130, y - 30, x - hl + 16, y - 6]); } }
+  // ---- automatic placement of the value boxes (only depends on the zoom, so it is cached)
+  const ck = k.toFixed(3);
+  let place = cache && cache.k === ck ? cache.place : null;
+  if (!place) {
+    place = {};
+    const ovl = (a, b) => Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) * Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+    const radii = [0, 10, 22, 38, 58, 84, 118, 160], NA = 16;
+    const rectOf = (q, th, r) => { const hw = q.w / 2, hh = q.h / 2, cx = q.ax + Math.cos(th) * (hw + r), cy = q.ay + Math.sin(th) * (hh + r); return [cx - hw, cy - hh, cx + hw, cy + hh]; };
+    const angd = (a, b) => { let d = Math.abs(a - b) % (2 * Math.PI); return d > Math.PI ? 2 * Math.PI - d : d; };
+    const placed = new Map(), leaders = new Map();
+    const bps = spec.buses.map((b) => P(b)), MG = 105;            // the value boxes stay within a margin around the network, so they are inside the fitted view
+    const bb = [Math.min(...bps.map((q) => q[0])) - MG, Math.min(...bps.map((q) => q[1])) - MG, Math.max(...bps.map((q) => q[0])) + MG, Math.max(...bps.map((q) => q[1])) + MG];
+    const leadOf = (q, rc, r) => {                                // the thin line from the element to its value box, and sample points along it
+      if (r <= 5) return null;
+      const px = Math.min(Math.max(q.ax, rc[0]), rc[2]), py = Math.min(Math.max(q.ay, rc[1]), rc[3]), n = Math.max(2, Math.ceil(Math.hypot(px - q.ax, py - q.ay) / 6)), pts = [];
+      for (let i = 0; i <= n; i++) pts.push([q.ax + (px - q.ax) * i / n, q.ay + (py - q.ay) * i / n]);
+      return { seg: [q.ax, q.ay, px, py], pts };
+    };
+    const cross = (s, t) => { const d = (s[2] - s[0]) * (t[3] - t[1]) - (s[3] - s[1]) * (t[2] - t[0]); if (Math.abs(d) < 1e-9) return false;
+      const u = ((t[0] - s[0]) * (t[3] - t[1]) - (t[1] - s[1]) * (t[2] - t[0])) / d, v = ((t[0] - s[0]) * (s[3] - s[1]) - (t[1] - s[1]) * (s[2] - s[0])) / d; return u > 0.02 && u < 0.98 && v > 0.02 && v < 0.98; };
+    const costOf = (q, rc, th, r) => {
+      let c = r * 2 + (r > 0 ? 8 : 0);
+      const ld = leadOf(q, rc, r);
+      c += 25 * (Math.max(0, bb[0] - rc[0]) + Math.max(0, rc[2] - bb[2]) + Math.max(0, bb[1] - rc[1]) + Math.max(0, rc[3] - bb[3]));
+      for (const [kk, L2] of leaders) { if (kk === q.key) continue;
+        if (ld && cross(ld.seg, L2.seg)) c += 220;
+        for (const s of L2.pts) if (s[0] > rc[0] && s[0] < rc[2] && s[1] > rc[1] && s[1] < rc[3]) c += 70; }
+      if (ld) for (const [kk, pr] of placed) { if (kk === q.key) continue; for (const s of ld.pts) if (s[0] > pr[0] && s[0] < pr[2] && s[1] > pr[1] && s[1] < pr[3]) c += 1600; }
+      if (q.pref != null) { let d = angd(th, q.pref); if (q.pref2 != null) d = Math.min(d, angd(th, q.pref2)); c += 10 * d; }
+      for (const [kk, pr] of placed) { if (kk === q.key) continue; const o = ovl(rc, pr); if (o > 0) c += 5000 + 3 * o; }
+      for (const o of obst) { const v = ovl(rc, o); if (v > 0) c += 2600 + 2 * v; }
+      let n = 0; for (const s of segs) if (s[0] > rc[0] - 1 && s[0] < rc[2] + 1 && s[1] > rc[1] - 1 && s[1] < rc[3] + 1) n++;
+      return c + n * 30;
+    };
+    const best = (q) => {
+      let bc = Infinity, bp = null;
+      for (const r0 of radii) { const r = r0 + (q.r0 || 0);
+        for (let i = 0; i < NA; i++) { const th = (i / NA) * 2 * Math.PI, rc = rectOf(q, th, r), c = costOf(q, rc, th, r); if (c < bc) { bc = c; bp = { rc, r }; } }
+        if (bc < 60) break;
+      }
+      return bp;
+    };
+    const order = [...reqs].sort((p, q) => (p.rows.length === 3 ? 0 : 1) - (q.rows.length === 3 ? 0 : 1));
+    const put = (q, bp) => { placed.set(q.key, bp.rc); const ld = leadOf(q, bp.rc, bp.r); if (ld) leaders.set(q.key, ld); else leaders.delete(q.key); place[q.key] = bp; };
+    for (const q of order) put(q, best(q));
+    for (let pass = 0; pass < 3; pass++) for (const q of order) { placed.delete(q.key); leaders.delete(q.key); put(q, best(q)); }
+    for (const q of order) place[q.key] = place[q.key] || { rc: placed.get(q.key), r: 0 };
+    if (cache) { cache.k = ck; cache.place = place; }
+  }
+  // ---- draw: leader lines, arrows, then the value boxes
+  const lead = [], txt = [];
+  for (const q of reqs) {
+    const p = place[q.key]; if (!p) continue;
+    const [x0, y0, x1, y1] = p.rc;
+    if (p.r > 5) {
+      const px = Math.min(Math.max(q.ax, x0), x1), py = Math.min(Math.max(q.ay, y0), y1);
+      lead.push(`<path d="M${q.ax} ${q.ay}L${px} ${py}" stroke="${q.col || muted}" stroke-width="1" stroke-opacity=".75" fill="none"/><circle cx="${q.ax}" cy="${q.ay}" r="2" fill="${q.col || muted}"/>`);
+    }
+    const mid = (x0 + x1) / 2;
+    txt.push(`<text class="flow" text-anchor="middle"${q.col ? ` style="fill:${q.col}"` : ""}>${q.rows.map((r, i) => `<tspan x="${mid}" y="${y0 + 11 + i * LH}"${r.col && r.bold ? ` style="fill:${r.col};font-weight:700"` : ""}>${r.t}</tspan>`).join("")}</text>`);
+  }
+  out.push(...lead, ...arrows, ...txt);
 }
 function detailMaps(d, spec) {
   const out = { branches: {}, buses: {}, ext: {}, loads: {}, sgens: {}, battery_i: null, losses: d.losses_mw };
@@ -2025,7 +2069,7 @@ function mapCard(r, opts = {}) {
   let hour = opts.hour ?? 0;
   if (r && opts.hour == null) base.loading.forEach((row, i) => { const v = r.path.reduce((a, j) => a + row[j], 0); if (v > r.path.reduce((a, j) => a + base.loading[hour][j], 0)) hour = i; });
   if (keep) hour = Math.min(T - 1, Math.max(0, keep.hour));
-  let fitK = 0;                                                  // power flow view: zooming out stops here, so the text never gets smaller than the fitted size
+  const layoutCache = {};                                       // power flow view: where the value boxes were placed at this zoom
   let mode = r ? (keep && keep.mode === "before" ? "before" : "after") : "before"; let timer = null; let view = null; let detail = null; let want = null; let busy = false;
   const wrap = h("div", { class: "mapwrap" + (adv ? " adv" : "") });
   const ov = h("div", { class: "mapov" });                                           // controls shown on top of the map in full screen
@@ -2062,10 +2106,9 @@ function mapCard(r, opts = {}) {
     const vals = {}; const L = mode === "after" ? r.loading_after[hour] : base.loading[hour];
     els.forEach((e, i) => (vals[elemKey(e.type, e.id)] = L[i]));
     const keepSpec = S.spec; S.spec = spec;              // renderSLD looks buses up in S.spec
-    if (!view && flow) { view = fitFlow(svg, spec, wrap, document.fullscreenElement === wrap, document.fullscreenElement === wrap ? 70 : 0); fitK = view.k; }
     if (!view) {
-      view = fitView(svg, spec, adv ? 70 : 46);
-      if (adv && view.k < 1.55) {                       // zoom in so labels have room; pan to explore
+      view = fitView(svg, spec, flow ? 120 : adv ? 70 : 46);
+      if (adv && !flow && view.k < 1.55) {                       // zoom in so labels have room; pan to explore
         const rc = svg.getBoundingClientRect(); const xs = spec.buses.map((b) => b.x * U), ys = spec.buses.map((b) => b.y * U);
         const k = 1.55, cx = (Math.min(...xs) + Math.max(...xs)) / 2;
         view = { k, tx: rc.width / 2 - cx * k + 20, ty: 70 - Math.min(...ys) * k };
@@ -2074,7 +2117,7 @@ function mapCard(r, opts = {}) {
     const vm = {}; const V = mode === "after" ? r.vm_after[hour] : base.vm[hour]; base.buses.forEach((b, i) => (vm[b.id] = V[i]));
     const det = adv && detail && detail.key === `${hour}:${mode}` ? detail : null;
     renderSLD(svg, spec, { view, values: vals, readOnly: true, battery: mode === "after" ? { bus: r.bus, p: r.schedule_mw[hour] } : null,
-      labels: !(flow && det), showVm: !adv && view.k > 0.6, vm, detail: det, detailMode: flow ? "flow" : "pqi" });
+      labels: !(flow && det), showVm: !adv && view.k > 0.6, vm, detail: det, detailMode: flow ? "flow" : "pqi", layoutCache });
     S.spec = keepSpec;
     if (flow && det) {
       const sum = (o) => Object.values(o).reduce((t, x) => t + x.p, 0), m2 = (v) => fmt(v, Math.abs(v) >= 10 ? 1 : 2);
@@ -2104,7 +2147,7 @@ function mapCard(r, opts = {}) {
   ctl.append(play, slider, lbl);
   if (adv) {                                            // pan and zoom for reading the labels
     const zb = h("div", { class: "zoombar" });
-    const zoom = (f, px, py) => { const rc = svg.getBoundingClientRect(); px ??= rc.width / 2; py ??= rc.height / 2; const k = Math.min(5, Math.max(flow ? fitK : 0.15, view.k * f)), g = k / view.k; view = { k, tx: px - (px - view.tx) * g, ty: py - (py - view.ty) * g }; draw(); };
+    const zoom = (f, px, py) => { const rc = svg.getBoundingClientRect(); px ??= rc.width / 2; py ??= rc.height / 2; const k = Math.min(5, Math.max(0.15, view.k * f)), g = k / view.k; view = { k, tx: px - (px - view.tx) * g, ty: py - (py - view.ty) * g }; draw(); };
     if (flow) {
       const mvCtl = (on) => { const anchor = errNote; if (on) { ov.append(ctl, sumBox); wrap.append(ov); } else { ov.remove(); card.insertBefore(ctl, anchor); card.insertBefore(sumBox, anchor); } };
       const fsBtn = h("button", { class: "btn", title: "Fill the screen so the whole network and all values are readable at once", onclick: () => { if (document.fullscreenElement) document.exitFullscreen(); else if (wrap.requestFullscreen) wrap.requestFullscreen().catch(() => {}); } }, "Full screen");
@@ -2133,7 +2176,7 @@ function mapCard(r, opts = {}) {
     mkSw("flow-toggle", "Detailed power flow: amount and direction", "Arrows show which way the active power flows on every line and transformer, with MW, Mvar and loading in %, and the MW and Mvar of every load and generator. Cannot be combined with the P, Q, I view.", flow, (c) => { S.flowView = c; if (c) S.advanced = false; }));
   card.append(h("div", { class: "chart-title" }, h("h3", {}, "Network at a chosen hour"), h("span", { class: "muted" }, sub)), togs, ctl, sumBox, errNote, wrap,
     h("div", { class: "leg" }, h("span", {}, "Loading"), h("span", { class: "heatbar", style: { background: heatGradient() } }), h("span", { class: "mono" }, "0 → 100 %"),
-      flow ? h("span", {}, "Arrows show the direction of active power; the bigger the arrow, the higher the loading (full size at 100 % and above); thicker lines carry more MW. Beside each line: MW · Mvar at the sending end · loading %. Loads hang below the bus bar and generators stand above it; their MW · Mvar are next to them. Drag to pan, scroll to zoom in.") : null,
+      flow ? h("span", {}, "Arrows show the direction of active power; the bigger the arrow, the higher the loading (full size at 100 % and above); thicker lines carry more MW. Beside each line: MW · Mvar at the sending end · loading %. Loads hang below the bus bar and generators stand above it. The values are placed automatically so they do not cover each other; a thin line links a value to its element when it has to sit further away. Drag to pan, scroll to zoom.") : null,
       adv && !flow ? h("span", {}, "Branch ends: P [MW] · Q [Mvar] · I [kA], positive out of the bus · Loads (consumed) and generators (delivered): P · Q · I · Bus boxes: U [kV] · u [pu] · angle [°] · External grid: P · Q · I. Drag to pan, scroll to zoom.") : null));
   if (keep) requestAnimationFrame(() => window.scrollTo({ top: Math.max(0, card.getBoundingClientRect().top + window.scrollY - 80) }));
   requestAnimationFrame(go);
