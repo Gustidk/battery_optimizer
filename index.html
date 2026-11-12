@@ -493,7 +493,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "6a61e57cfa";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "87c0ffba8e";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -502,6 +502,8 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const clone = (o) => JSON.parse(JSON.stringify(o));
+// Chart times are UTC clock readings (price and weather files use the same clock); uPlot would otherwise shift them to the browser's time zone.
+const UTC_TZ = (ts) => new Date(ts * 1000 + new Date(ts * 1000).getTimezoneOffset() * 60000);
 const fmt = (v, d = 1) => (v == null || !isFinite(v) ? "–" : Number(v).toLocaleString("en-GB", { minimumFractionDigits: d, maximumFractionDigits: d }));
 const fmtSigned = (v, d = 1) => (v == null || !isFinite(v) ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "±") + fmt(Math.abs(v), d));
 function h(tag, attrs = {}, ...kids) {
@@ -1895,7 +1897,7 @@ function renderCompare(root, c) {
     h("div", { class: "eyebrow", style: { marginTop: "8px" } }, "Solar irradiance (GHI), W/m²"), e3,
     h("div", { class: "eyebrow", style: { marginTop: "8px" } }, "Wind speed at 100 m, m/s"), e4);
   const key = "cmp-" + Math.random();
-  const mkTs = (el, series, data, height, yr) => { const u = new uPlot({ width: width(), height, padding: [8, 8, 0, 0], legend: { show: false }, cursor: { sync: { key, setSeries: false }, drag: { x: true, y: false }, points: { size: 7 } },
+  const mkTs = (el, series, data, height, yr) => { const u = new uPlot({ tzDate: UTC_TZ, width: width(), height, padding: [8, 8, 0, 0], legend: { show: false }, cursor: { sync: { key, setSeries: false }, drag: { x: true, y: false }, points: { size: 7 } },
     scales: { x: { time: true }, y: yr ? { range: yr } : {} }, axes: axes(""), series: [{}, ...series] }, data, el); charts.push(u); return u; };
   const P = st.mw;
   const uC = mkTs(e1, [{ stroke: colRev, width: 1.5, paths: uPlot.paths.stepped({ align: 1 }) }, { stroke: colGrid, width: 1.5, paths: uPlot.paths.stepped({ align: 1 }) }],
@@ -2046,7 +2048,7 @@ function renderDetail(root, r) {
   };
   const mk = (el, series, data, yr, unit, height, splits) => {
     const width = Math.max(280, el.clientWidth || root.clientWidth - 40);
-    const u = new uPlot({ width, height, padding: [8, 8, 0, 0], cursor: { sync: { key: syncKey, setSeries: false }, drag: { x: true, y: false }, points: { size: 7 } },
+    const u = new uPlot({ tzDate: UTC_TZ, width, height, padding: [8, 8, 0, 0], cursor: { sync: { key: syncKey, setSeries: false }, drag: { x: true, y: false }, points: { size: 7 } },
       legend: { show: false }, scales: { x: { time: true }, y: yr ? { range: yr } : {} }, axes: (() => { const ax = axes(unit); if (splits) ax[1].splits = () => splits; return ax; })(), series: [{}, ...series],
       hooks: { setCursor: [(u) => updReadout(u.cursor.idx)] } }, data, el);
     charts.push(u); return u;
@@ -2288,7 +2290,7 @@ function renderLoadflow(root) {
     { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, font: "11px IBM Plex Mono, monospace", size: 46 }];
   const key = "gfbp-lf-" + Math.random();
   const upd = (u) => { const i = u.cursor.idx; if (i == null) { readout.textContent = ""; return; } const f = Number(sel.value); readout.textContent = `${when(i)} · ${els[f].name}: ${fmt(base.loading[i][f], 1)} % · grid exchange ${fmt(base.tso_mw[i], 2)} MW · losses ${fmt(base.losses_mw[i], 3)} MW`; };
-  const mk = (el, data, h0) => { const u = new uPlot({ width: Math.max(280, el.clientWidth || root.clientWidth - 40), height: h0, padding: [8, 8, 0, 0], legend: { show: false },
+  const mk = (el, data, h0) => { const u = new uPlot({ tzDate: UTC_TZ, width: Math.max(280, el.clientWidth || root.clientWidth - 40), height: h0, padding: [8, 8, 0, 0], legend: { show: false },
     cursor: { sync: { key }, drag: { x: true, y: false }, points: { size: 7 } }, scales: { x: { time: true } }, axes: axes(), series: [{}, { stroke: colA, width: 1.8 }], hooks: { setCursor: [upd] } }, data, el); charts.push(u); return u; };
   const ld = (f) => [xs, Float64Array.from(base.loading, (row) => row[f])];
   const u1 = mk(c1, ld(worst), 180), u2 = mk(c2, [xs, Float64Array.from(base.tso_mw)], 140);
