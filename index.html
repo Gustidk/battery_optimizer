@@ -487,7 +487,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "542664b7c9";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "9a61c9dbc2";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -763,7 +763,7 @@ function renderSLD(svg, spec, opts) {
     const hl = Math.max(20, 10 + (flowM ? Math.max(nLoad, att.length - nLoad) : att.length) * step) * sz; hlOf.set(b.id, hl);
     const col = voltColor(b.vn_kv);
     if (isSel("bus", b.id) || (opts.pending === b.id)) out.push(`<line class="sel" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16" stroke-linecap="round"/>`);
-    out.push(`<line class="busbar" x1="${x - hl}" y1="${y}" x2="${x + hl}" y2="${y}" stroke="${col}" stroke-width="5"/>`);
+    out.push(`<line class="busbar" x1="${x - hl}" y1="${y}" x2="${x + hl}" y2="${y}" stroke="${flowM ? cssVar("--ink") : col}" stroke-width="5"/>`);
     let li = 0, di = 0;
     att.forEach((a, i) => {
       const slot = flowM ? (a.kind === "load" ? li++ : di++) : i;
@@ -771,6 +771,7 @@ function renderSLD(svg, spec, opts) {
       const ox = x + (left ? -(30 + slot * step) : (opts.detail ? (flowM ? 34 : 26) : 10) + slot * step) * sz, sel = isSel(a.kind, a.e.id);
       a.ox = ox; a.up = false;
       const c = sel ? accent : ink2;
+      if (left) out.push(`<path d="M${ox} ${y + 2}v10" stroke="${c}" stroke-width="1.4"/><g transform="translate(0 10)">`);    // generators sit a little lower, leaving room for the arrow
       if (a.kind === "load") {
         out.push(`<path d="M${ox} ${y + 2}v14" stroke="${c}" stroke-width="1.4"/><path d="M${ox - 4.5} ${y + 15}h9l-4.5 7z" fill="${c}"/>`);
       } else if ((a.e.type || "").toUpperCase() === "CONST") {
@@ -780,6 +781,7 @@ function renderSLD(svg, spec, opts) {
       } else {
         out.push(`<path d="M${ox} ${y + 2}v8" stroke="${c}" stroke-width="1.4"/><rect x="${ox - 6}" y="${y + 10}" width="12" height="12" fill="${cssVar("--panel")}" stroke="${c}" stroke-width="1.4"/><path d="M${ox - 6} ${y + 22}L${ox + 6} ${y + 10}" stroke="${c}" stroke-width="1.1"/>`);
       }
+      if (left) out.push("</g>");
       if (!opts.readOnly) out.push(`<rect class="hit" data-k="${a.kind}:${a.e.id}" x="${ox - 7}" y="${y + 2}" width="14" height="22"/>`);
     });
     for (const e of spec.ext_grids.filter((g) => Number(g.bus) === b.id)) {
@@ -793,7 +795,7 @@ function renderSLD(svg, spec, opts) {
       if (p != null) out.push(`<text class="val" x="${flowM ? bx - 12 : bx + 12}" y="${y - 16}"${flowM ? ' text-anchor="end"' : ""} style="fill:${bat}">${p > 0.005 ? "discharging" : p < -0.005 ? "charging" : "idle"} ${fmt(Math.abs(p), 2)} MW</text>`);
     }
     const lbl = esc(b.name || `Bus ${b.id}`);
-    out.push(`<text class="lbl" x="${x - hl - 6}" y="${y + 4}" text-anchor="end">${lbl}</text>`);
+    out.push(`<text class="lbl" x="${x - hl - 6}" y="${y + 4}" text-anchor="end"${flowM ? ` style="fill:${cssVar("--ink")}"` : ""}>${lbl}</text>`);
     if (opts.showVm && opts.vm && opts.vm[b.id] != null) out.push(`<text class="lbl kv" x="${x - hl - 6}" y="${y + 16}" text-anchor="end">${fmt(opts.vm[b.id], 3)} pu</text>`);
     else if (k > 0.75 && !opts.readOnly) out.push(`<text class="lbl kv" x="${x - hl - 6}" y="${y + 16}" text-anchor="end">${fmt(b.vn_kv, b.vn_kv < 1 ? 2 : 0)} kV</text>`);
     out.push(`<line class="hit" data-k="bus:${b.id}" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16"/>`);
@@ -891,11 +893,12 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq) {
     for (const a of attach.get(b.id) || []) {
       const d = a.kind === "load" ? D.loads[a.e.id] : D.sgens[a.e.id]; if (!d || a.ox == null) continue;
       const col = a.kind === "load" ? cLoad : cDer;
+      const dy = a.kind === "load" ? 0 : 10, acol = a.kind === "load" ? "#8a1c1c" : "#1b5e20";           // dark red arrows for loads, dark green for generators
       const dirn = a.kind === "load" ? (d.p >= 0 ? 1 : -1) : (d.p >= 0 ? -1 : 1);      // loads draw power down out of the bar, generators push it up into it
-      if (Math.abs(d.p) > 0.0005) arrows.push(arrow(a.ox, y + 7, 0, dirn, 5, col));
-      obst.push([a.ox - 8, y, a.ox + 8, y + 26]);
+      if (Math.abs(d.p) > 0.0005) arrows.push(arrow(a.ox, y + 7, 0, dirn, 5, acol));
+      obst.push([a.ox - 8, y, a.ox + 8, y + 26 + dy]);
       const rows = [{ t: `${n2(d.p)} MW`, col }, ...(fq ? [{ t: `${n2(d.q)} Mvar`, col }] : [])];
-      reqs.push({ key: `${a.kind}:${a.e.id}`, ax: a.ox, ay: y + 26, w: LW, h: rows.length * LH + 4, pref: a.kind === "load" ? Math.PI * 0.4 : Math.PI * 0.6, pref2: null, r0: 3, rows, col });
+      reqs.push({ key: `${a.kind}:${a.e.id}`, ax: a.ox, ay: y + 26 + dy, w: LW, h: rows.length * LH + 4, pref: a.kind === "load" ? Math.PI * 0.4 : Math.PI * 0.6, pref2: null, r0: 3, rows, col });
     }
   }
   for (const g of spec.ext_grids) {
