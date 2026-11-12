@@ -182,6 +182,12 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
 .off-mode .batonly { display: none !important; }
 #b-fields.disabled { opacity: .45; pointer-events: none; }
 .mapwrap.adv { height: 720px; cursor: grab; }
+.mapsplit { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; align-items: start; }
+.mapside { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.mapside .mapctl { flex-direction: column; align-items: stretch; gap: 8px; }
+.mapside .mapctl input[type="range"] { min-width: 100px; }
+.mapside .leg { flex-wrap: wrap; font-size: 12px; }
+@media (max-width: 960px) { .mapsplit { grid-template-columns: minmax(0, 1fr); } }
 .mapov { position: absolute; left: 10px; top: 10px; right: 230px; z-index: 2; display: flex; flex-direction: column; gap: 4px; background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
 .mapwrap:fullscreen { background: var(--panel); }
 .mapwrap .zoombar { position: absolute; right: 10px; top: 10px; display: flex; gap: 4px; }
@@ -487,7 +493,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "d84d8c53d8";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "b5c2c3e9e4";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -2043,10 +2049,7 @@ function renderDetail(root, r) {
   ro.observe(ts); charts.push({ destroy: () => ro.disconnect() });
 
   // ----- element peaks (dumbbell) + map
-  const grid = h("div", { class: "resgrid" });
-  if (S.advanced || S.flowView) { root.append(mapCard(r)); grid.append(peaksCard(r, els)); }
-  else grid.append(peaksCard(r, els), mapCard(r));
-  root.append(grid);
+  root.append(mapCard(r), peaksCard(r, els));                          // the map has a column of controls beside it, so it gets the full width
   const exp = h("div", { class: "row" }, h("button", { class: "btn", onclick: () => showExport("results") }, "Hourly results as CSV"), h("span", { class: "muted", style: { fontSize: "12px" } }, "Every hour: battery power, stored energy and the loading of each line and transformer, with and without battery."));
   root.append(exp);
 }
@@ -2088,6 +2091,7 @@ function mapCard(r, opts = {}) {
   const layoutCache = {};                                       // power flow view: where the value boxes were placed at this zoom
   let mode = r ? (keep && keep.mode === "before" ? "before" : "after") : "before"; let timer = null; let view = null;
   const wrap = h("div", { class: "mapwrap" + (adv ? " adv" : "") });
+  const side = h("div", { class: "mapside" });                                          // controls in the left column
   const ov = h("div", { class: "mapov" });                                           // controls shown on top of the map in full screen
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("class", "sld"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Network at the selected hour"); wrap.append(svg);
   const slider = h("input", { type: "range", min: 0, max: T - 1, value: hour, "aria-label": "Hour" });
@@ -2180,12 +2184,13 @@ function mapCard(r, opts = {}) {
     bA.onclick = () => { mode = "after"; bA.setAttribute("aria-pressed", "true"); bB.setAttribute("aria-pressed", "false"); go(); };
     ctl.append(seg);
   }
-  ctl.append(play, slider, lbl);
+  const prow = h("div", { class: "row", style: { gap: "10px", flexWrap: "nowrap" } }, play, slider);
+  ctl.append(prow, lbl);
   if (adv) {                                            // pan and zoom for reading the labels
     const zb = h("div", { class: "zoombar" });
     const zoom = (f, px, py) => { const rc = svg.getBoundingClientRect(); px ??= rc.width / 2; py ??= rc.height / 2; const k = Math.min(5, Math.max(0.15, view.k * f)), g = k / view.k; view = { k, tx: px - (px - view.tx) * g, ty: py - (py - view.ty) * g }; draw(); };
     if (flow) {
-      const mvCtl = (on) => { const anchor = errNote; if (on) { ov.append(ctl, sumBox); wrap.append(ov); } else { ov.remove(); card.insertBefore(ctl, anchor); card.insertBefore(sumBox, anchor); } };
+      const mvCtl = (on) => { const anchor = errNote; if (on) { ov.append(ctl, sumBox); wrap.append(ov); } else { ov.remove(); side.insertBefore(ctl, anchor); side.insertBefore(sumBox, anchor); } };
       const fsBtn = h("button", { class: "btn", title: "Fill the screen so the whole network and all values are readable at once", onclick: () => { if (document.fullscreenElement) document.exitFullscreen(); else if (wrap.requestFullscreen) wrap.requestFullscreen().catch(() => {}); } }, "Full screen");
       zb.append(fsBtn);
       const onFs = () => { const on = document.fullscreenElement === wrap; fsBtn.textContent = on ? "Exit full screen" : "Full screen"; mvCtl(on); view = null; draw(); };
@@ -2207,16 +2212,17 @@ function mapCard(r, opts = {}) {
     inp.onchange = () => { set(inp.checked); store.set("advanced", S.advanced); store.set("flowView", S.flowView); S.keep = { hour, mode }; renderResults(); };
     return h("label", { class: "switch", title }, inp, h("span", { class: "track", "aria-hidden": "true" }), label);
   };
-  const togs = h("div", { class: "row", style: { gap: "18px" } },
+  const togs = h("div", { class: "row", style: { gap: "10px", flexDirection: "column", alignItems: "flex-start" } },
     mkSw("adv-toggle", "P, Q, I and voltage values", "Show P, Q and I at the ends of every line and transformer, on every load and generator, and the voltage on every bus. Cannot be combined with the power flow view.", S.advanced && !flow, (c) => { S.advanced = c; if (c) S.flowView = false; }),
     mkSw("flow-toggle", "Detailed power flow: amount and direction", "Arrows show which way the active power flows on every line and transformer, with MW, Mvar and loading in %, and the MW and Mvar of every load and generator. Cannot be combined with the P, Q, I view.", flow, (c) => { S.flowView = c; if (c) S.advanced = false; }));
   if (flow) {
     const seg = h("div", { class: "seg", title: "What the power flow view shows" });
-    const bP = h("button", { "aria-pressed": String(S.flowMode === "p") }, "Active power (MW)"), bQ = h("button", { "aria-pressed": String(S.flowMode !== "p") }, "Active + reactive (MW, Mvar)");
+    const bP = h("button", { "aria-pressed": String(S.flowMode === "p") }, "MW only"), bQ = h("button", { "aria-pressed": String(S.flowMode !== "p") }, "MW and Mvar");
     const setM = (m) => { S.flowMode = m; store.set("flowMode", m); S.keep = { hour, mode }; renderResults(); };
     bP.onclick = () => setM("p"); bQ.onclick = () => setM("pq"); seg.append(bP, bQ); togs.append(seg);
   }
-  card.append(h("div", { class: "chart-title" }, h("h3", {}, "Network at a chosen hour"), h("span", { class: "muted" }, sub)), togs, ctl, sumBox, errNote, wrap,
+  card.append(h("div", { class: "chart-title" }, h("h3", {}, "Network at a chosen hour"), h("span", { class: "muted" }, sub)), h("div", { class: "mapsplit" }, side, wrap));
+  side.append(togs, ctl, sumBox, errNote,
     h("div", { class: "leg" }, h("span", {}, "Loading"), h("span", { class: "heatbar", style: { background: heatGradient() } }), h("span", { class: "mono" }, "0 → 100 %"),
       flow ? h("span", {}, "Arrows show the direction of active power; the bigger the arrow, the higher the loading (full size at 100 % and above); thicker lines carry more MW. Beside each line: MW (and Mvar, if chosen) at the sending end · loading %. Loads hang below the bus bar to the right of the node and generators below it to the left. The values are placed automatically so they do not cover each other; a thin line links a value to its element when it has to sit further away. Drag to pan, scroll to zoom.") : null,
       adv && !flow ? h("span", {}, "Branch ends: P [MW] · Q [Mvar] · I [kA], positive out of the bus · Loads (consumed) and generators (delivered): P · Q · I · Bus boxes: U [kV] · u [pu] · angle [°] · External grid: P · Q · I. Drag to pan, scroll to zoom.") : null));
@@ -2269,11 +2275,8 @@ function renderLoadflow(root) {
   const u1 = mk(c1, ld(worst), 180), u2 = mk(c2, [xs, Float64Array.from(base.tso_mw)], 140);
   sel.onchange = () => u1.setData(ld(Number(sel.value)));
   const ro = new ResizeObserver(() => { const w = Math.max(280, c1.clientWidth); [u1, u2].forEach((u) => u.setSize({ width: w, height: u.height })); }); ro.observe(ts); charts.push({ destroy: () => ro.disconnect() });
-  const grid = h("div", { class: "resgrid" });
   const map = mapCard(null, { hour: lf.max_loading_hour });
-  if (S.advanced || S.flowView) { root.append(map); grid.append(peaksCard({ peaks_before: lf.peaks }, els)); }
-  else grid.append(peaksCard({ peaks_before: lf.peaks }, els), map);
-  root.append(grid);
+  root.append(map, peaksCard({ peaks_before: lf.peaks }, els));
   root.append(h("div", { class: "row" }, h("button", { class: "btn", onclick: () => showExport("results") }, "Hourly results as CSV"), h("span", { class: "muted", style: { fontSize: "12px" } }, "Every hour: grid exchange, losses and the loading of each line and transformer.")));
 }
 
