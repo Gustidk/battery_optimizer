@@ -558,7 +558,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "645c9d2913";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "14e1d38679";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -679,19 +679,19 @@ function startEngine() {
 
 // ============================================================ state
 const DEFAULT_STUDY = {
-  place: "Aarhus", lat: 56.15, lon: 10.21, start: "2025-01-13", days: 7,
+  place: "Aarhus", lat: 56.15, lon: 10.21, start: "2025-07-07", days: 7,
   mw: 4, mwh: 16, eta_c: 95, eta_d: 95, soc: 50, bus: 8,
-  objective: "minmax", model: "piecewise", wl: 1, wt: 1, probe: 2, levels: 9, mode: "one", battery: true,
-  price: false, area: "DK1", wear: 0, load_f: 1, der_f: 1,
+  objective: "quadratic_peak", model: "piecewise", wl: 1, wt: 1, probe: 2, levels: 9, mode: "one", battery: true,
+  price: false, area: "DK1", wear: 0, load_f: 1, der_f: 20,
   g_stc: 1000, g_pr: 100, g_vin: 3, g_vrated: 12, g_vout: 25, g_exp: 3,        // solar and wind production formulas
-  sn_on: true, sn_mw: 8, sn_mwh: 32, sn_n: 5,                                 // battery size sensitivity
+  sn_on: true, sn_mw: 8, sn_mwh: 32, sn_n: 4,                                 // battery size sensitivity
 };
 const GEN_DEFAULTS = { g_stc: 1000, g_pr: 100, g_vin: 3, g_vrated: 12, g_vout: 25, g_exp: 3 };
 const PLACES = { Aarhus: [56.15, 10.21], "Copenhagen": [55.68, 12.57], Odense: [55.40, 10.39], Aalborg: [57.05, 9.92], Esbjerg: [55.48, 8.45], Custom: null };
 const S = {
   spec: null, sel: null, tool: "select", pendingBus: null,
   view: { tx: 0, ty: 0, k: 1 }, netView: "diagram", tableTab: "buses",
-  check: null, study: (() => { const st = { ...DEFAULT_STUDY, ...store.get("study", {}) }; if (st.v !== 2) { st.v = 2; st.mode = "all"; } return st; })(),
+  check: null, study: (() => { const st = { ...DEFAULT_STUDY, ...store.get("study", {}) }; if (st.v !== 3) { st.v = 3; Object.assign(st, { mode: "all", objective: "quadratic_peak", sn_n: 4, der_f: 20, start: "2025-07-07", days: 7 }); } return st; })(),
   weather: null, priceData: null, results: null, running: false, dirty: true, advanced: store.get("advanced", false), flowView: store.get("flowView", false), flowMode: store.get("flowMode", "pq"), keep: null, netValues: store.get("netValues", false),
 };
 const U = 70; // px per diagram unit
