@@ -183,6 +183,7 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
 .switch input:checked + .track::after { transform: translateX(14px); }
 .switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
 .off-mode .batonly { display: none !important; }
+#lx-fields.disabled { opacity: .45; }
 #sn-fields.disabled { opacity: .45; }
 #b-fields.disabled { opacity: .45; pointer-events: none; }
 .mapwrap.adv { height: 720px; cursor: grab; }
@@ -402,6 +403,15 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
           <label class="f">Weight on lines<input id="o-wl" type="number" step="0.5" min="0"></label>
           <label class="f">Weight on transformers<input id="o-wt" type="number" step="0.5" min="0"></label>
         </div>
+        <div class="lexbox" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+          <div class="row"><b style="font-size:14px">Profit as second priority</b><span class="spacer"></span>
+            <label class="switch"><input type="checkbox" id="lx-on" role="switch"><span class="track" aria-hidden="true"></span><span>Optimise profit after grid-friendliness</span></label></div>
+          <p class="sub" style="margin:6px 0 0;font-size:13px">Two steps. First the battery is planned for the best grid-friendliness. Then the plan is changed to earn as much as possible without giving up more of that benefit than you allow. Needs electricity prices, so they are switched on with this.</p>
+          <div id="lx-fields" style="margin-top:10px">
+            <label class="f"><span>Priority on grid-friendliness <span class="u">%, 0 to 100</span></span><input id="lx-pct" type="number" step="5" min="0" max="100"></label>
+            <p class="muted" id="lx-hint" style="font-size:12.5px;margin:6px 0 0"></p>
+          </div>
+        </div>
       </div>
       <div class="card span6 batonly">
         <h3>How the grid’s response is modelled</h3>
@@ -558,7 +568,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "14e1d38679";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "1c52b804bd";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -684,7 +694,8 @@ const DEFAULT_STUDY = {
   objective: "quadratic_peak", model: "piecewise", wl: 1, wt: 1, probe: 2, levels: 9, mode: "one", battery: true,
   price: false, area: "DK1", wear: 0, load_f: 1, der_f: 20,
   g_stc: 1000, g_pr: 100, g_vin: 3, g_vrated: 12, g_vout: 25, g_exp: 3,        // solar and wind production formulas
-  sn_on: true, sn_mw: 8, sn_mwh: 32, sn_n: 4,                                 // battery size sensitivity
+  sn_on: true, sn_mw: 8, sn_mwh: 32, sn_n: 4,
+  lx_on: false, lx_pct: 100,                                                  // profit as second priority                                 // battery size sensitivity
 };
 const GEN_DEFAULTS = { g_stc: 1000, g_pr: 100, g_vin: 3, g_vrated: 12, g_vout: 25, g_exp: 3 };
 const PLACES = { Aarhus: [56.15, 10.21], "Copenhagen": [55.68, 12.57], Odense: [55.40, 10.39], Aalborg: [57.05, 9.92], Esbjerg: [55.48, 8.45], Custom: null };
@@ -1565,7 +1576,7 @@ function initStudyForm() {
   bindNum("#b-mw", "mw"); bindNum("#b-mwh", "mwh"); bindNum("#b-etac", "eta_c"); bindNum("#b-etad", "eta_d"); bindNum("#b-soc", "soc");
   bindNum("#o-wl", "wl"); bindNum("#o-wt", "wt"); bindNum("#m-probe", "probe"); bindNum("#m-levels", "levels");
   bindNum("#sc-load", "load_f"); bindNum("#sc-der", "der_f");
-  initGenCard(); initSensCard();
+  initGenCard(); initSensCard(); initLexCard();
   for (const id of ["#sc-load", "#sc-der"]) $(id).addEventListener("input", () => { const k = id === "#sc-load" ? "load_f" : "der_f"; const v = Number($(id).value); if (isFinite(v) && v >= 0) { S.study[k] = v; renderScenarioPreview(); } });
   renderScenarioPreview();
   initPriceForm();
@@ -1622,6 +1633,20 @@ function initGenCard() {
   }
   $("#g-reset").onclick = () => { Object.assign(S.study, GEN_DEFAULTS); for (const [id, key] of map) $(id).value = S.study[key]; saveStudy(); S.dirty = true; drawGenCurves(); renderWeatherStatus(); };
   drawGenCurves(); renderGenTable();
+}
+// ---- second priority: profit after grid-friendliness
+function lexHint() {
+  const el = $("#lx-hint"); if (!el) return; const p = S.study.lx_pct;
+  el.textContent = !(p >= 0 && p <= 100) ? "Enter a number from 0 to 100." : p >= 100 ? "100 %: keep all of the best grid-friendliness, then earn as much as that allows."
+    : p <= 0 ? "0 %: earn as much as possible with no demand on the grid (the pure revenue plan)." : `${fmt(p, 0)} %: keep ${fmt(p, 0)} % of the best grid benefit and use the other ${fmt(100 - p, 0)} % to earn more.`;
+}
+function initLexCard() {
+  const on = $("#lx-on"), pct = $("#lx-pct"); on.checked = !!S.study.lx_on; pct.value = S.study.lx_pct;
+  const apply = () => { $("#lx-fields").classList.toggle("disabled", !on.checked); lexHint(); };
+  on.onchange = () => { S.study.lx_on = on.checked; if (on.checked && !S.study.price) { S.study.price = true; applyPriceMode(); } saveStudy(); S.dirty = true; apply(); };
+  pct.addEventListener("input", () => { const v = Number(pct.value); if (pct.value !== "" && isFinite(v)) { S.study.lx_pct = v; lexHint(); } });
+  pct.onchange = () => { const v = Number(pct.value); if (isFinite(v)) { S.study.lx_pct = Math.min(100, Math.max(0, v)); pct.value = S.study.lx_pct; saveStudy(); S.dirty = true; lexHint(); } };
+  apply();
 }
 // ---- battery size sensitivity (Study settings)
 function sensSizes() {
@@ -1843,7 +1868,7 @@ function builtinPriceData() {
 }
 function initPriceForm() {
   const on = $("#p-on"); on.checked = !!S.study.price;
-  on.onchange = () => { S.study.price = on.checked; saveStudy(); S.dirty = true; applyPriceMode(); };
+  on.onchange = () => { S.study.price = on.checked; if (!on.checked && S.study.lx_on) { S.study.lx_on = false; $("#lx-on").checked = false; $("#lx-fields").classList.add("disabled"); } saveStudy(); S.dirty = true; applyPriceMode(); };
   const ar = $("#p-area"); ar.value = S.study.area || "DK1";
   ar.onchange = () => { S.study.area = ar.value; saveStudy(); S.dirty = true; renderPriceStatus(); };
   bindNum("#p-wear", "wear");
@@ -1867,6 +1892,7 @@ function settingsPayload() {
   return { battery_mw: s.mw, battery_mwh: s.mwh, eta_c: s.eta_c / 100, eta_d: s.eta_d / 100, soc_init: s.soc / 100, dt_h: 1,
     probe_mw: s.probe, n_levels: Math.max(3, Math.round(s.levels) | 1), weight_line: s.wl, weight_trafo: s.wt, throughput_cost: s.price ? s.wear : 0,
     load_factor: s.load_f, der_factor: s.der_f,
+    profit_priority: !!(s.lx_on && s.price), grid_priority_pct: s.lx_pct,
     pv_stc_w_m2: s.g_stc, pv_performance_ratio: s.g_pr / 100, wind_v_in: s.g_vin, wind_v_rated: s.g_vrated, wind_v_out: s.g_vout, wind_exponent: s.g_exp };
 }
 function runError(msg) { $("#r-msg").innerHTML = ""; $("#r-msg").append(h("div", { class: "note err", style: { marginTop: "10px" }, text: msg })); }
@@ -1876,6 +1902,7 @@ async function runStudy() {
   const s = S.study; $("#r-msg").innerHTML = "";
   const withBat = s.battery !== false;
   if (!(s.load_f >= 0) || !(s.der_f >= 0)) return runError("The load and DER factors must be zero or more.");
+  if (withBat && s.lx_on && !(s.lx_pct >= 0 && s.lx_pct <= 100)) return runError("The priority on grid-friendliness must be between 0 and 100 %.");
   if (!(s.g_stc > 0 && s.g_pr >= 0)) return runError("Solar: the irradiance for full output must be above 0 and the performance ratio 0 or more.");
   if (!(s.g_vin >= 0 && s.g_vin < s.g_vrated && s.g_vrated <= s.g_vout && s.g_exp > 0)) return runError("Wind: cut-in speed must be below the rated speed, the rated speed at most the cut-out speed, and the exponent above 0.");
   if (withBat && !(s.mw > 0 && s.mwh > 0)) return runError("Battery power and energy must be above zero.");
@@ -1979,6 +2006,7 @@ function renderResults() {
   const title = R.kind === "loadflow" ? "Load flow" : R.kind === "all" ? "Where should the battery go?" : `Battery at ${R.single.bus_name}`;
   const chips = R.kind === "loadflow" ? [h("span", { class: "chip" }, `${m.weather.hours} hours`), h("span", { class: "chip" }, "No battery")]
     : [h("span", { class: "chip" }, `${fmt(st.mw, 1)} MW / ${fmt(st.mwh, 1)} MWh`), h("span", { class: "chip" }, objTxt), h("span", { class: "chip" }, modelTxt)];
+  if (R.kind !== "loadflow" && st.lx_on && st.price) chips.push(h("span", { class: "chip" }, `Profit second · ${fmt(st.lx_pct, 0)} % on grid`));
   if ((st.load_f ?? 1) !== 1 || (st.der_f ?? 1) !== 1) chips.push(h("span", { class: "chip" }, `Loads ×${fmt(st.load_f ?? 1, 2)} · DER ×${fmt(st.der_f ?? 1, 2)}`));
   const head = h("div", { class: "row" },
     h("div", { style: { minWidth: 0 } }, h("span", { class: "eyebrow" }, sub), h("h2", {}, title)),
@@ -2111,7 +2139,7 @@ function renderCompare(root, c) {
   const objName = c.grid_objective === "minmax" ? "objective 1" : "objective 3";
   const card = h("div", { class: "card" });
   card.append(h("div", { class: "chart-title" }, h("h3", {}, "Revenue plan or grid-friendly plan?"),
-    h("span", { class: "muted" }, `Same battery (${fmt(st.mw, 1)} MW / ${fmt(st.mwh, 1)} MWh) at ${c.bus_name}. The revenue plan follows the spot price only; the grid-friendly plan is ${objName}. Both are checked with the same AC load flow.`)));
+    h("span", { class: "muted" }, `Same battery (${fmt(st.mw, 1)} MW / ${fmt(st.mwh, 1)} MWh) at ${c.bus_name}. The revenue plan follows the spot price only; the grid-friendly plan is ${objName}${c.grid_plan.lex ? `, with profit as second priority (${fmt(c.grid_plan.lex.priority_pct, 0)} % on grid-friendliness)` : ""}. Both are checked with the same AC load flow.`)));
   const kp = (label, big, small, note, cls) => h("div", { class: "kpi" }, h("div", { class: "eyebrow" }, label),
     h("div", { class: "big" }, h("span", {}, big), small ? h("span", { class: "from" }, small) : null), h("div", { class: "d " + (cls || "") }, note));
   const gi = x.weighted_overload_grid_plan, ri = x.weighted_overload_revenue_plan, b0 = x.weighted_overload_before;
@@ -2119,7 +2147,10 @@ function renderCompare(root, c) {
     kp("Revenue, revenue plan", `${fmt(x.revenue_revenue_plan, 0)} ${cur}`, "", `grid-friendly plan: ${fmt(x.revenue_grid_plan, 0)} ${cur}`),
     kp("What grid-friendliness costs", `${fmt(x.revenue_given_up, 0)} ${cur}`, "", `${fmt(x.revenue_given_up_pct, 0)} % of the revenue plan’s income`, x.revenue_given_up > 0 ? "bad" : "good"),
     kp("Weighted squared peaks", fmt(gi, 0), `revenue plan ${fmt(ri, 0)}`, `no battery ${fmt(b0, 0)} · revenue plan ${fmtSigned(100 * (ri / b0 - 1), 1)} % · grid plan ${fmtSigned(100 * (gi / b0 - 1), 1)} %`, ri > b0 ? "bad" : ""),
-    kp("Hours where they differ", `${x.hours_differ} of ${x.hours}`, `${x.hours_conflict} opposite`, `Opposite = one charges while the other discharges. Correlation ${fmt(x.schedule_correlation, 2)}.`)));
+    kp("Hours where they differ", `${x.hours_differ} of ${x.hours}`, `${x.hours_conflict} opposite`, `Opposite = one charges while the other discharges. Correlation ${fmt(x.schedule_correlation, 2)}.`),
+    ...(c.grid_plan.lex ? [(() => { const L = c.grid_plan.lex, kept = L.model_reduction_stage1_pct > 1e-9 ? 100 * L.model_reduction_stage2_pct / L.model_reduction_stage1_pct : 100;
+      return kp("Profit as second priority", `+${fmt(L.revenue_stage2 - L.revenue_stage1, 0)} ${cur}`, `${fmt(kept, 0)} % of the grid benefit kept`,
+        `Step 1 (grid-friendliness only): ${fmt(L.revenue_stage1, 0)} ${cur}. Step 2: ${fmt(L.revenue_stage2, 0)} ${cur}. Grid benefit in the model: ${fmt(L.model_reduction_stage1_pct, 1)} % → ${fmt(L.model_reduction_stage2_pct, 1)} %.`, "good"); })()] : [])));
   const axes = (unit) => [{ stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { stroke: gridC, width: 1 }, font: "11px IBM Plex Sans, system-ui" },
     { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, font: "11px IBM Plex Mono, monospace", size: 52, values: (u, v) => v.map((q) => fmt(q, Math.abs(q) < 10 && q % 1 ? 1 : 0) + unit) }];
   root.append(card);
