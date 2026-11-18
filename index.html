@@ -568,7 +568,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "ee96d1aa93";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "8868b99b50";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -2017,7 +2017,17 @@ function renderResults() {
   root.append(renderSelector());
   if (R.base.energy) renderEnergy(root, R.base.energy);
   const rank = R.kind === "all" ? renderRanking() : null, peaks = R.single ? peaksCard(R.single, R.base.elements) : null;
-  if (rank && peaks) root.append(h("div", { class: "pair" }, rank, peaks)); else if (rank || peaks) root.append(rank || peaks);
+  if (rank && peaks) {
+    const pair = h("div", { class: "pair" }, rank, peaks); root.append(pair);
+    // Make the ranking card as tall as the peak-loading card: spread the extra height over the bar rows.
+    requestAnimationFrame(() => {
+      const sv = rank.querySelector("svg"), n = R.ranking.filter((r) => !r.error).length;
+      if (!sv || !n || !sv.clientWidth || getComputedStyle(pair).gridTemplateColumns.split(" ").length < 2) return;
+      const extra = peaks.getBoundingClientRect().height - rank.getBoundingClientRect().height;
+      if (extra <= 0) return;
+      rank.replaceWith(renderRanking(24 + extra / n / (sv.clientWidth / 640)));
+    });
+  } else if (rank || peaks) root.append(rank || peaks);
   if (S.study.battery !== false) root.append(renderSens());
   const detail = h("div", { id: "detail", style: { display: "flex", flexDirection: "column", gap: "14px" } });
   root.append(detail);
@@ -2196,7 +2206,7 @@ function renderCompare(root, c) {
 
 function objMetric(r, obj) { return obj === "minmax" ? r.mean_of_max_after_pct : r.weighted_overload_after; }
 const gainOf = (r, obj) => obj === "minmax" ? r.mean_of_max_before_pct - r.mean_of_max_after_pct : 100 * (1 - r.weighted_overload_after / r.weighted_overload_before);
-function renderRanking() {
+function renderRanking(rowH = 24) {
   const R = S.results, obj = R.meta.study.objective;
   const ok = R.ranking.filter((r) => !r.error); const bad = R.ranking.filter((r) => r.error);
   const sorted = ok.slice().sort((a, b) => objMetric(a, obj) - objMetric(b, obj));
@@ -2206,7 +2216,7 @@ function renderRanking() {
   // bars
   const vals = sorted.map((r) => gainOf(r, obj));
   const unit = obj === "minmax" ? " pp" : " %";
-  const W = 640, rowH = 24, padL = 120, padR = 70, H = sorted.length * rowH + 30;
+  const W = 640, padL = 120, padR = 70, H = sorted.length * rowH + 30;
   const mx = Math.max(1e-9, ...vals.map(Math.abs));
   const svg = svgEl({ viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: "max-width:100%;height:auto", role: "img", "aria-label": "Improvement by battery placement" });
   const sx = (v) => padL + Math.max(0, v) / mx * (W - padL - padR);
