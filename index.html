@@ -212,7 +212,7 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
 .resgrid { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 14px; align-items: start; }
 .chart { position: relative; }
 .chart .uplot { font-family: var(--f-body); }
-.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.pair { display: grid; grid-template-columns: minmax(0, 0.75fr) minmax(0, 1.25fr); gap: 14px; align-items: start; }
 @media (max-width: 1100px) { .pair { grid-template-columns: minmax(0, 1fr); } }
 .nodesel { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
 .nodesel b { font-size: 18px; font-family: var(--f-display); }
@@ -568,7 +568,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "1c52b804bd";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "ee96d1aa93";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -2394,7 +2394,7 @@ function peaksCard(r, els) {
   // Revenue plan for the same battery position: already validated with an AC load flow in compare_bus, so this costs no extra load flows.
   const rev = revOn ? cmp0.revenue_plan.peaks_after : null;
   const idx = els.map((_, i) => i).sort((a, b) => r.peaks_before[b] - r.peaks_before[a]);
-  const W = 560, rowH = 22, padL = 150, padR = rev ? 160 : 108, H = idx.length * rowH + 28;
+  const W = 760, rowH = 22, padL = 112, padR = rev ? 160 : 108, H = idx.length * rowH + 28;
   const mx = Math.max(100, ...r.peaks_before, ...r.peaks_after, ...(rev || []));
   const sx = (v) => padL + (v / mx) * (W - padL - padR);
   const path = new Set(r.path);
@@ -2403,7 +2403,7 @@ function peaksCard(r, els) {
   idx.forEach((i, row) => {
     const y = 4 + row * rowH + rowH / 2, a = r.peaks_before[i], b = r.peaks_after[i];
     s += `<g><rect class="row-hit" x="0" y="${y - rowH / 2}" width="${W}" height="${rowH}"/><title>${esc(els[i].name)}: ${single ? fmt(a, 1) + " %" : `${fmt(a, 1)} % → ${fmt(b, 1)} %${rev ? " (revenue plan " + fmt(rev[i], 1) + " %)" : ""}`}</title>`;
-    s += `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" font-size="11.5" fill="${cssVar("--ink")}" font-weight="${path.has(i) ? 600 : 400}">${esc(els[i].name.length > 22 ? els[i].name.slice(0, 21) + "…" : els[i].name)}</text>`;
+    s += `<text x="2" y="${y + 4}" text-anchor="start" font-size="11.5" fill="${cssVar("--ink")}" font-weight="${path.has(i) ? 600 : 400}">${esc(els[i].name.length > 22 ? els[i].name.slice(0, 21) + "…" : els[i].name)}</text>`;
     const cc = rev ? rev[i] : null;
     s += `<line x1="${sx(Math.min(a, b, cc ?? a))}" y1="${y}" x2="${sx(Math.max(a, b, cc ?? b))}" y2="${y}" stroke="${cssVar("--line")}" stroke-width="2"/>`;
     if (single) s += `<circle cx="${sx(a)}" cy="${y}" r="4.5" fill="${a > 100 ? cssVar("--crit") : cssVar("--after")}" stroke="${cssVar("--panel")}" stroke-width="2"/>`;
