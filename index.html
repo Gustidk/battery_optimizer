@@ -568,7 +568,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "8868b99b50";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "a928df34c0";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -2374,7 +2374,7 @@ function renderDetail(root, r) {
   };
   const P = st.mw;
   const u1 = mk(c1, [{ stroke: colA, width: 1.5, fill: colA + "33", fillTo: 0, paths: uPlot.paths.stepped({ align: 1 }) }], [xs, Float64Array.from(sched)], [-P * 1.08, P * 1.08], "", 140, [-P, -P / 2, 0, P / 2, P]);
-  const u2 = mk(c2, [{ stroke: colA, width: 2 }], [xs, Float64Array.from(soc)], [0, st.mwh * 1.04], "", 110, [0, st.mwh / 2, st.mwh]);
+  const u2 = mk(c2, [{ stroke: colA, width: 2 }], [xs, Float64Array.from(soc)], [Math.min(0, Math.min(...soc)), Math.max(st.mwh, Math.max(...soc)) * 1.04], "", 110, soc.some((v) => v < -1e-3 || v > st.mwh + 1e-3) ? null : [0, st.mwh / 2, st.mwh]);
   const lineData = (f) => [xs, Float64Array.from(base.loading, (row) => row[f]), Float64Array.from(r.loading_after, (row) => row[f])];
   const u3 = mk(c3, [{ stroke: colB, width: 1.5 }, { stroke: colA, width: 2 }], lineData(focus), null, "", 170);
   sel.onchange = () => { u3.setData(lineData(Number(sel.value))); updReadout(lastIdx); };
