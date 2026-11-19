@@ -185,6 +185,11 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
 .off-mode .batonly { display: none !important; }
 #lx-fields.disabled { opacity: .45; }
 #sn-fields.disabled { opacity: .45; }
+#sn-fields input.bad, .f input.bad { border-color: var(--crit); }
+.sn-matrix { border-collapse: separate; border-spacing: 3px; margin-top: 8px; font-family: "IBM Plex Mono", monospace; font-size: 12px; }
+.sn-matrix th { font-weight: 500; color: var(--muted); text-align: center; padding: 3px 10px; white-space: nowrap; }
+.sn-matrix tbody th { text-align: right; }
+.sn-matrix td { text-align: center; padding: 5px 12px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); color: var(--ink); }
 #b-fields.disabled { opacity: .45; pointer-events: none; }
 .mapwrap.adv { height: 720px; cursor: grab; }
 .mapsplit { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; align-items: start; }
@@ -467,11 +472,10 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
       <div class="card span12 batonly" id="card-sens">
         <div class="row"><h3>Battery size sensitivity</h3><span class="spacer"></span>
           <label class="switch"><input type="checkbox" id="sn-on" role="switch"><span class="track" aria-hidden="true"></span><span>Run with the study</span></label></div>
-        <p class="sub" style="margin:6px 0 10px;font-size:13px">Runs the chosen placement for every combination of battery power and energy up to the limits below and shows how much the weighted squared peaks fall. It uses the piecewise AC model, so the sizes are compared fairly, and the grid response is measured once and shared between sizes.</p>
-        <div class="grid3" id="sn-fields">
-          <label class="f"><span>Largest power <span class="u">MW</span></span><input id="sn-mw" type="number" step="1" min="0.1"></label>
-          <label class="f"><span>Largest energy <span class="u">MWh</span></span><input id="sn-mwh" type="number" step="1" min="0.1"></label>
-          <label class="f"><span>Steps <span class="u">per axis, 2 to 8</span></span><input id="sn-n" type="number" step="1" min="2" max="8"></label>
+        <p class="sub" style="margin:6px 0 10px;font-size:13px">Runs the chosen placement for every combination of the battery powers and durations below and shows how much the weighted squared peaks fall. The energy of each battery is power × duration. It uses the piecewise AC model, so the sizes are compared fairly, and the grid response is measured once and shared between sizes.</p>
+        <div class="grid2" id="sn-fields">
+          <label class="f"><span>Battery powers <span class="u">MW · commas between values · dot for decimals</span></span><input id="sn-powers" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="1, 2, 4"></label>
+          <label class="f"><span>Battery durations <span class="u">hours · commas between values</span></span><input id="sn-hours" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="1, 2, 4"></label>
         </div>
         <div id="sn-est" class="muted" style="font-size:12.5px;margin-top:8px"></div>
       </div>
@@ -568,7 +572,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "a928df34c0";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "71221f7aa4";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -694,7 +698,7 @@ const DEFAULT_STUDY = {
   objective: "quadratic_peak", model: "piecewise", wl: 1, wt: 1, probe: 2, levels: 9, mode: "one", battery: true,
   price: false, area: "DK1", wear: 0, load_f: 1, der_f: 20,
   g_stc: 1000, g_pr: 100, g_vin: 3, g_vrated: 12, g_vout: 25, g_exp: 3,        // solar and wind production formulas
-  sn_on: true, sn_mw: 8, sn_mwh: 32, sn_n: 4,
+  sn_on: true, sn_powers: "1, 2, 4", sn_hours: "1, 2, 4",
   lx_on: false, lx_pct: 100,                                                  // profit as second priority                                 // battery size sensitivity
 };
 const GEN_DEFAULTS = { g_stc: 1000, g_pr: 100, g_vin: 3, g_vrated: 12, g_vout: 25, g_exp: 3 };
@@ -1649,20 +1653,45 @@ function initLexCard() {
   apply();
 }
 // ---- battery size sensitivity (Study settings)
+// The size analysis tests every combination of the powers (MW) and durations (hours) typed in the Study tab;
+// the energy of each battery is power x duration.
+function parseList(text) {
+  const parts = String(text ?? "").split(/[\s,;]+/).filter(Boolean), out = [];
+  for (const p of parts) { const v = Number(p.replace(",", ".")); if (!isFinite(v) || v <= 0) return { error: `“${p}” is not a positive number.` }; out.push(+v.toFixed(4)); }
+  const list = [...new Set(out)].sort((x, y) => x - y);
+  if (!list.length) return { error: "Type at least one number." };
+  if (list.length > 8) return { error: "At most 8 values per list." };
+  return { list };
+}
 function sensSizes() {
-  const s = S.study, n = Math.max(2, Math.min(8, Math.round(s.sn_n)));
-  const mw = Array.from({ length: n }, (_, i) => +(s.sn_mw * (i + 1) / n).toFixed(4)), mwh = Array.from({ length: n }, (_, i) => +(s.sn_mwh * (i + 1) / n).toFixed(4));
-  return { mw, mwh, n };
+  const p = parseList(S.study.sn_powers), d = parseList(S.study.sn_hours);
+  if (p.error) throw new Error("Battery powers: " + p.error);
+  if (d.error) throw new Error("Battery durations: " + d.error);
+  return { mw: p.list, hours: d.list };
 }
 function updateSensEstimate() {
   const el = $("#sn-est"); if (!el || !S.spec) return;
-  const { mw, mwh, n } = sensSizes(), f = periodHours() / 8760, sizeF = Math.max(1, (S.spec.buses.length / 15) ** 1.6) * Math.max(1, elementList().length / 17);
-  const sec = SEC_PER_YEAR.piecewise * f * sizeF * (1 + 0.3 * n * n);
-  el.textContent = `${n} × ${n} = ${n * n} battery sizes: ${mw.map((x) => fmt(x, x % 1 ? 1 : 0)).join(", ")} MW and ${mwh.map((x) => fmt(x, x % 1 ? 1 : 0)).join(", ")} MWh. Rough time on this device: ${sec < 60 ? Math.max(1, Math.round(sec)) + " s" : Math.round(sec / 60) + " min"}.`;
+  const p = parseList($("#sn-powers").value), d = parseList($("#sn-hours").value);
+  const err = (p.error && "Powers: " + p.error) || (d.error && "Durations: " + d.error);
+  $("#sn-powers").classList.toggle("bad", !!p.error); $("#sn-hours").classList.toggle("bad", !!d.error);
+  if (err) { el.innerHTML = ""; el.append(h("span", { style: { color: "var(--crit)" } }, err)); return; }
+  const mw = p.list, hrs = d.list, N = mw.length * hrs.length, f = periodHours() / 8760;
+  const sizeF = Math.max(1, (S.spec.buses.length / 15) ** 1.6) * Math.max(1, elementList().length / 17);
+  const sec = SEC_PER_YEAR.piecewise * f * sizeF * (1 + 0.3 * N);
+  const g = (x) => fmt(x, x % 1 ? 1 : 0);
+  // preview: one row per duration, one column per power, each cell shows the resulting energy
+  const tbl = h("table", { class: "sn-matrix" });
+  tbl.append(h("thead", {}, h("tr", {}, h("th", {}, "Duration \\ Power"), ...mw.map((m) => h("th", {}, `${g(m)} MW`)))));
+  tbl.append(h("tbody", {}, ...hrs.map((t) => h("tr", {}, h("th", {}, `${g(t)} h`), ...mw.map((m) => h("td", {}, `${g(m * t)} MWh`))))));
+  el.innerHTML = "";
+  el.append(h("div", {}, `${mw.length} × ${hrs.length} = ${N} battery sizes. Rough time on this device: ${sec < 60 ? Math.max(1, Math.round(sec)) + " s" : Math.round(sec / 60) + " min"}.`), tbl);
 }
 function initSensCard() {
-  bindNum("#sn-mw", "sn_mw"); bindNum("#sn-mwh", "sn_mwh"); bindNum("#sn-n", "sn_n");
-  for (const id of ["#sn-mw", "#sn-mwh", "#sn-n"]) $(id).addEventListener("change", updateSensEstimate);
+  for (const [id, key] of [["#sn-powers", "sn_powers"], ["#sn-hours", "sn_hours"]]) {
+    const el = $(id); el.value = S.study[key];
+    el.oninput = updateSensEstimate;
+    el.onchange = () => { S.study[key] = el.value; saveStudy(); S.dirty = true; updateSensEstimate(); };
+  }
   const on = $("#sn-on"); on.checked = S.study.sn_on !== false;
   on.onchange = () => { S.study.sn_on = on.checked; saveStudy(); $("#sn-fields").classList.toggle("disabled", !on.checked); };
   $("#sn-fields").classList.toggle("disabled", !on.checked);
@@ -2052,39 +2081,39 @@ function renderSens() {
   const best = ok.reduce((b, c) => (!b || c.reduction_pct > b.reduction_pct ? c : b), null);
   const stale = sn.bus !== R.selected;
   card.append(h("p", { class: "muted", style: { fontSize: "12.5px", margin: "6px 0 0" } },
-    `${busName(sn.bus)} · ${sn.mw.length} × ${sn.mwh.length} sizes · every size is checked with its own AC load flow. Hover a field for details.`,
-    best ? ` Largest reduction: ${fmt(best.reduction_pct, 1)} % at ${fmt(best.mw, 1)} MW / ${fmt(best.mwh, 1)} MWh.` : ""));
+    `${busName(sn.bus)} · ${sn.mw.length} × ${sn.hours.length} sizes · every size is checked with its own AC load flow. Hover a field for details.`,
+    best ? ` Largest reduction: ${fmt(best.reduction_pct, 1)} % at ${fmt(best.mw, 1)} MW × ${fmt(best.hours, 1)} h (${fmt(best.mwh, 1)} MWh).` : ""));
   if (stale) card.append(h("div", { class: "note warn", style: { marginTop: "8px" } }, `This analysis is for ${busName(sn.bus)}, not the chosen node.`), runBtn(`Run for ${busName(R.selected)}`));
-  const pick = (mw, mwh) => cells.find((c) => c.mw === mw && c.mwh === mwh);
-  const tipTxt = (c) => c.error ? `${fmt(c.mw, 1)} MW / ${fmt(c.mwh, 1)} MWh: ${c.error}` : `${fmt(c.mw, 1)} MW / ${fmt(c.mwh, 1)} MWh (${fmt(c.mwh / c.mw, 1)} h)\nWeighted squared peaks: ${fmtSigned(-c.reduction_pct, 1)} %\nAverage element peak: ${fmt(c.mean_peak_before_pct, 2)} → ${fmt(c.mean_peak_after_pct, 2)} %\nHighest loading: ${fmt(c.max_loading_before_pct, 1)} → ${fmt(c.max_loading_after_pct, 1)} %\nHours overloaded: ${c.hours_overloaded_before} → ${c.hours_overloaded_after}\nFull cycles: ${fmt(c.cycles, 1)}`;
+  const pick = (mw, hrs) => cells.find((c) => c.mw === mw && c.hours === hrs);
+  const tipTxt = (c) => c.error ? `${fmt(c.mw, 1)} MW × ${fmt(c.hours, 1)} h: ${c.error}` : `${fmt(c.mw, 1)} MW × ${fmt(c.hours, 1)} h = ${fmt(c.mwh, 1)} MWh\nWeighted squared peaks: ${fmtSigned(-c.reduction_pct, 1)} %\nAverage element peak: ${fmt(c.mean_peak_before_pct, 2)} → ${fmt(c.mean_peak_after_pct, 2)} %\nHighest loading: ${fmt(c.max_loading_before_pct, 1)} → ${fmt(c.max_loading_after_pct, 1)} %\nHours overloaded: ${c.hours_overloaded_before} → ${c.hours_overloaded_after}\nFull cycles: ${fmt(c.cycles, 1)}`;
   const body = h("div", { style: { marginTop: "8px" } }); card.append(body);
   const draw = () => {
     destroySensCharts(); body.innerHTML = "";
     if (S.sensView === "curves") {
       const el = h("div", { class: "chart" }), leg = h("div", { class: "leg", style: { marginTop: "6px" } });
-      body.append(h("div", { class: "eyebrow" }, "Reduction of the weighted squared peaks, % · by battery power, one line per battery energy"), el, leg);
-      const n = sn.mwh.length, dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+      body.append(h("div", { class: "eyebrow" }, "Reduction of the weighted squared peaks, % · by battery power, one line per battery duration"), el, leg);
+      const n = sn.hours.length, dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
       const col = (i) => `hsl(172 ${55}% ${dark ? 38 + 38 * i / Math.max(1, n - 1) : 72 - 44 * i / Math.max(1, n - 1)}%)`;
-      const data = [sn.mw, ...sn.mwh.map((e) => sn.mw.map((m) => { const c = pick(m, e); return c && c.reduction_pct != null ? c.reduction_pct : null; }))];
-      sn.mwh.forEach((e, i) => { const s = h("span", {}), d = h("i"); d.style.background = col(i); s.append(d, `${fmt(e, e % 1 ? 1 : 0)} MWh`); leg.append(s); });
+      const data = [sn.mw, ...sn.hours.map((e) => sn.mw.map((m) => { const c = pick(m, e); return c && c.reduction_pct != null ? c.reduction_pct : null; }))];
+      sn.hours.forEach((e, i) => { const s = h("span", {}), d = h("i"); d.style.background = col(i); s.append(d, `${fmt(e, e % 1 ? 1 : 0)} h`); leg.append(s); });
       const axisC = cssVar("--muted"), gridC = cssVar("--grid");
       const u = new uPlot({ plugins: [valueTip()], width: Math.max(280, card.clientWidth - 40), height: 260, padding: [8, 26, 0, 0], legend: { show: false }, cursor: { points: { size: 7 } }, scales: { x: { time: false }, y: { range: (u2, lo, hi) => [Math.min(0, lo), Math.max(5, hi * 1.08)] } },
         axes: [{ stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { stroke: gridC, width: 1 }, font: "11px IBM Plex Sans, system-ui", values: (u2, v) => v.map((q) => fmt(q, q % 1 ? 1 : 0) + " MW"), splits: () => sn.mw },
           { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, font: "11px IBM Plex Mono, monospace", size: 50, values: (u2, v) => v.map((q) => fmt(q, 0) + " %") }],
-        series: [{}, ...sn.mwh.map((e, i) => ({ stroke: col(i), width: 2, points: { show: true, size: 6 }, spanGaps: false }))] }, data, el);
+        series: [{}, ...sn.hours.map((e, i) => ({ stroke: col(i), width: 2, points: { show: true, size: 6 }, spanGaps: false }))] }, data, el);
       sensCharts.push(u);
     } else {
-      const nx = sn.mw.length, ny = sn.mwh.length, W = 640, padL = 70, padB = 44, padT = 8, padR = 10, cw = (W - padL - padR) / nx, ch = Math.min(52, 330 / ny), H = padT + ny * ch + padB;
+      const nx = sn.mw.length, ny = sn.hours.length, W = 640, padL = 78, padB = 44, padT = 8, padR = 10, cw = (W - padL - padR) / nx, ch = Math.min(52, 330 / ny), H = padT + ny * ch + padB;
       let s = "";
-      sn.mwh.forEach((e, j) => { const y = padT + (ny - 1 - j) * ch; s += `<text x="${padL - 8}" y="${y + ch / 2 + 4}" text-anchor="end" font-size="11.5" fill="${cssVar("--ink-2")}" font-family="IBM Plex Mono, monospace">${fmt(e, e % 1 ? 1 : 0)}</text>`;
+      sn.hours.forEach((e, j) => { const y = padT + (ny - 1 - j) * ch; s += `<text x="${padL - 8}" y="${y + ch / 2 + 4}" text-anchor="end" font-size="11.5" fill="${cssVar("--ink-2")}" font-family="IBM Plex Mono, monospace">${fmt(e, e % 1 ? 1 : 0)} h</text>`;
         sn.mw.forEach((m, i) => { const c = pick(m, e), x = padL + i * cw, v = c && c.reduction_pct != null ? c.reduction_pct : null;
-          const isBest = best && c === best, isCur = sn.current && Math.abs(m - sn.current.mw) < 1e-6 && Math.abs(e - sn.current.mwh) < 1e-6;
+          const isBest = best && c === best, isCur = sn.current && Math.abs(m - sn.current.mw) < 1e-6 && Math.abs(m * e - sn.current.mwh) < 1e-6;
           const fill = v == null ? cssVar("--grid") : v < 0 ? cssVar("--crit") : cssVar("--accent"), op = v == null ? 1 : v < 0 ? Math.min(0.9, 0.2 + 0.7 * Math.abs(v) / mx) : 0.1 + 0.88 * (v / mx), light = op > 0.55;
           s += `<g><title>${esc(c ? tipTxt(c) : "")}</title><rect x="${x + 1}" y="${y + 1}" width="${cw - 2}" height="${ch - 2}" rx="4" fill="${fill}" fill-opacity="${op}" ${isBest ? `stroke="${cssVar("--ink")}" stroke-width="2"` : isCur ? `stroke="${cssVar("--battery")}" stroke-width="2" stroke-dasharray="4 3"` : ""}/>`;
           s += `<text x="${x + cw / 2}" y="${y + ch / 2 + 4}" text-anchor="middle" font-size="12.5" font-weight="600" font-family="IBM Plex Mono, monospace" fill="${light ? cssVar("--accent-ink") : cssVar("--ink")}">${v == null ? "–" : fmt(v, 0) + "%"}</text></g>`; }); });
       sn.mw.forEach((m, i) => { s += `<text x="${padL + i * cw + cw / 2}" y="${padT + ny * ch + 16}" text-anchor="middle" font-size="11.5" fill="${cssVar("--ink-2")}" font-family="IBM Plex Mono, monospace">${fmt(m, m % 1 ? 1 : 0)}</text>`; });
-      s += `<text x="${padL + (W - padL - padR) / 2}" y="${H - 6}" text-anchor="middle" font-size="12" fill="${cssVar("--muted")}">Battery power, MW</text><text transform="translate(14 ${padT + ny * ch / 2}) rotate(-90)" text-anchor="middle" font-size="12" fill="${cssVar("--muted")}">Battery energy, MWh</text>`;
-      const svg = svgEl({ viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: "max-width:100%;height:auto", role: "img", "aria-label": "Reduction of the weighted squared peaks by battery power and energy" }); svg.innerHTML = s;
+      s += `<text x="${padL + (W - padL - padR) / 2}" y="${H - 6}" text-anchor="middle" font-size="12" fill="${cssVar("--muted")}">Battery power, MW</text><text transform="translate(14 ${padT + ny * ch / 2}) rotate(-90)" text-anchor="middle" font-size="12" fill="${cssVar("--muted")}">Battery duration, hours</text>`;
+      const svg = svgEl({ viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: "max-width:100%;height:auto", role: "img", "aria-label": "Reduction of the weighted squared peaks by battery power and duration" }); svg.innerHTML = s;
       body.append(h("div", { style: { overflowX: "auto" } }, svg),
         h("div", { class: "leg", style: { marginTop: "4px" } }, h("span", {}, "Darker = bigger reduction"), h("span", {}, "Solid frame: largest reduction"), h("span", {}, "Dashed frame: the battery size in the Study tab")));
     }
@@ -2288,8 +2317,8 @@ async function fetchPlacement(bus, prog) {
 }
 // Battery size sensitivity for one placement: weighted squared peaks for every (MW, MWh) combination. Always the piecewise AC model.
 async function runSensitivity(bus, prog) {
-  const st = S.results.meta.study, { mw, mwh } = sensSizes();
-  const r = await engine.json("sensitivity", [bus, st.objective, "piecewise", JSON.stringify(mw), JSON.stringify(mwh)], prog);
+  const st = S.results.meta.study, { mw, hours } = sensSizes();
+  const r = await engine.json("sensitivity", [bus, st.objective, "piecewise", JSON.stringify(mw), JSON.stringify(hours)], prog);
   r.current = { mw: st.mw, mwh: st.mwh }; return r;
 }
 async function openPlacement(bus) {

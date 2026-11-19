@@ -32,7 +32,7 @@ const handlers = {
   new_study: ([spec, ghi, wind, settings, price]) => api.new_study(spec, ghi, wind, settings, progress, price || undefined),
   run_bus: ([bus, obj, model]) => api.run_bus(bus, obj, model),
   compare_bus: ([bus, obj, model]) => api.compare_bus(bus, obj, model),
-  sensitivity: ([bus, obj, model, mw, mwh]) => api.sensitivity(bus, obj, model, mw, mwh),
+  sensitivity: ([bus, obj, model, mw, hours]) => api.sensitivity(bus, obj, model, mw, hours),
   run_all: ([obj, model, buses]) => api.run_all(obj, model, buses),
   loadflow: () => api.loadflow(),
   hour_detail: ([hour, bus, p]) => api.hour_detail(hour, bus == null ? -1 : bus, p || 0),
