@@ -418,17 +418,14 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
           </div>
         </div>
       </div>
-      <div class="card span6 batonly">
+      <div class="card span6 batonly" id="card-model">
         <h3>How the grid’s response is modelled</h3>
-        <div class="choice" style="margin-top:10px" id="model-choice">
-          <label><input type="radio" name="model" value="tangent"><b>Sensitivity at the peak hour</b><small>Fastest. One linear sensitivity per element, measured with AC load flows in the busiest hour.</small></label>
-          <label><input type="radio" name="model" value="tangent_hourly"><b>Hourly sensitivities</b><small>A sensitivity for every hour, so night and day differ.</small></label>
-          <label><input type="radio" name="model" value="piecewise"><b>Piecewise linear AC model</b><small>Most accurate. Measures the real AC loading at several battery power levels each hour.</small></label>
-        </div>
-        <div class="grid2" style="margin-top:10px">
-          <label class="f"><span>Probe power for sensitivities <span class="u">MW</span></span><input id="m-probe" type="number" step="0.5" min="0.1"></label>
-          <label class="f">Power levels (piecewise)<input id="m-levels" type="number" step="2" min="3" max="21"></label>
-        </div>
+        <p class="sub" style="margin:6px 0 10px;font-size:13px">The planner uses the <b>piecewise linear AC model</b>. For every hour it runs a real AC load flow with the battery set to several fixed powers, from full charging to full discharging, and reads off how loaded each line and transformer becomes. Between two measured powers it draws a straight line, and the optimiser then picks the battery power in each hour that keeps the highest loadings as low as possible.</p>
+        <div id="pw-fig"></div>
+        <div class="muted" style="font-size:12px;margin:2px 0 10px">Dashed: the true loading of one element. Dots: AC load flows (the grey dot is the network without a battery). Solid line: what the optimiser uses.</div>
+        <label class="f" style="max-width:260px">Power levels <span class="u">odd number, 3 to 21</span><input id="m-levels" type="number" step="2" min="3" max="21"></label>
+        <p class="muted" id="pw-info" style="font-size:12.5px;margin:8px 0 0"></p>
+        <p class="muted" style="font-size:12.5px;margin:6px 0 0">More levels follow the real curve more closely but take longer: the time grows with the number of levels. In Battery size sensitivity the spacing is instead set by the smallest power in the list, so all sizes share the same measurements.</p>
       </div>
       <div class="card span12" id="card-gen">
         <div class="row"><h3>Solar and wind production</h3><span class="spacer"></span><button class="btn" id="g-reset" type="button">Reset to defaults</button></div>
@@ -531,14 +528,14 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
       <h3>1. Baseline year</h3>
       <p>Every hour gets a full AC load flow (Newton-Raphson) without a battery. Loads follow their daily profile; PV follows irradiance relative to 1000 W/m²; wind turbines follow a generic cubic power curve (cut-in 3 m/s, rated 12 m/s, cut-out 25 m/s).</p>
       <h3>2. How the grid responds to the battery</h3>
-      <p>The planner measures, with AC load flows, how each element’s loading changes when the battery injects or absorbs power. Three options trade speed for accuracy: one sensitivity per element at the busiest hour, a sensitivity for every hour, or the real loading at several power levels each hour (a convex, piecewise linear model).</p>
+      <p>For every hour the planner runs AC load flows with the battery set to several fixed powers, from full charging to full discharging, and records the loading of every line and transformer. Between two measured powers the loading is joined by a straight line, which gives a convex, piecewise linear model of the grid’s response. The number of power levels is set in the Study tab.</p>
       <h3>3. Optimise the schedule</h3>
       <div class="formula">Objective 1   minimise  (1/n) Σₗ peakₗ
 Objective 3   minimise  Σₗ wₗ · peakₗ²
 subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every element l and hour t
               soc[t] = soc[t−1] + ηc·charge[t] − discharge[t]/ηd
               0 ≤ charge, discharge ≤ P,   0 ≤ soc ≤ E,   soc at the end = soc at the start</div>
-      <p>Objective 1 is a linear programme solved with HiGHS; objective 3 and the piecewise model are solved with Clarabel. The piecewise model is solved twice: the second pass locks each hour to charging, discharging or idle, so the battery never charges and discharges at the same time.</p>
+      <p>Both objectives are solved with Clarabel (interior point). The schedule is solved twice: the second pass locks each hour to charging, discharging or idle, so the battery never charges and discharges at the same time.</p>
       <h3>4. Validate</h3>
       <p>The schedule is run through a new AC time series with the battery in place. Loadings, voltages and the exchange with the transmission grid are reported from this run, not from the optimisation model.</p>
       <h3>Assumptions</h3>
@@ -572,7 +569,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "71221f7aa4";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "7955883727";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -695,7 +692,7 @@ function startEngine() {
 const DEFAULT_STUDY = {
   place: "Aarhus", lat: 56.15, lon: 10.21, start: "2025-07-07", days: 7,
   mw: 4, mwh: 16, eta_c: 95, eta_d: 95, soc: 50, bus: 8,
-  objective: "quadratic_peak", model: "piecewise", wl: 1, wt: 1, probe: 2, levels: 9, mode: "one", battery: true,
+  objective: "quadratic_peak", wl: 1, wt: 1, levels: 9, mode: "one", battery: true,
   price: false, area: "DK1", wear: 0, load_f: 1, der_f: 20,
   g_stc: 1000, g_pr: 100, g_vin: 3, g_vrated: 12, g_vout: 25, g_exp: 3,        // solar and wind production formulas
   sn_on: true, sn_powers: "1, 2, 4", sn_hours: "1, 2, 4",
@@ -1578,7 +1575,7 @@ function initStudyForm() {
   const st = $("#w-start"); st.value = S.study.start; st.onchange = () => { S.study.start = st.value; saveStudy(); renderWeatherStatus(); updateEstimate(); scheduleWeather(); };
   $("#w-quick").onchange = (ev) => { const d = Number(ev.target.value); if (!d) return; S.study.days = d; $("#w-days").value = d; scheduleWeather(); if (d >= 365) { S.study.start = S.study.start.slice(0, 4) + "-01-01"; st.value = S.study.start; } ev.target.value = ""; saveStudy(); renderWeatherStatus(); updateEstimate(); };
   bindNum("#b-mw", "mw"); bindNum("#b-mwh", "mwh"); bindNum("#b-etac", "eta_c"); bindNum("#b-etad", "eta_d"); bindNum("#b-soc", "soc");
-  bindNum("#o-wl", "wl"); bindNum("#o-wt", "wt"); bindNum("#m-probe", "probe"); bindNum("#m-levels", "levels");
+  bindNum("#o-wl", "wl"); bindNum("#o-wt", "wt"); initModelCard();
   bindNum("#sc-load", "load_f"); bindNum("#sc-der", "der_f");
   initGenCard(); initSensCard(); initLexCard();
   for (const id of ["#sc-load", "#sc-der"]) $(id).addEventListener("input", () => { const k = id === "#sc-load" ? "load_f" : "der_f"; const v = Number($(id).value); if (isFinite(v) && v >= 0) { S.study[k] = v; renderScenarioPreview(); } });
@@ -1586,7 +1583,6 @@ function initStudyForm() {
   initPriceForm();
   for (const r of $$('input[name="obj"]')) { r.checked = r.value === S.study.objective; r.onchange = () => { S.study.objective = r.value; saveStudy(); $("#weights").hidden = r.value !== "quadratic_peak"; }; }
   $("#weights").hidden = S.study.objective !== "quadratic_peak";
-  for (const r of $$('input[name="model"]')) { r.checked = r.value === S.study.model; r.onchange = () => { S.study.model = r.value; saveStudy(); updateEstimate(); }; }
   const setMode = (m) => { S.study.mode = m; saveStudy(); $("#r-one").setAttribute("aria-pressed", m === "one"); $("#r-all").setAttribute("aria-pressed", m === "all"); updateEstimate(); };
   $("#r-one").onclick = () => setMode("one"); $("#r-all").onclick = () => setMode("all"); setMode(S.study.mode);
   $("#w-fetch").onclick = () => fetchWeather().catch((e) => renderWeatherStatus(e.message));
@@ -1677,7 +1673,7 @@ function updateSensEstimate() {
   if (err) { el.innerHTML = ""; el.append(h("span", { style: { color: "var(--crit)" } }, err)); return; }
   const mw = p.list, hrs = d.list, N = mw.length * hrs.length, f = periodHours() / 8760;
   const sizeF = Math.max(1, (S.spec.buses.length / 15) ** 1.6) * Math.max(1, elementList().length / 17);
-  const sec = SEC_PER_YEAR.piecewise * f * sizeF * (1 + 0.3 * N);
+  const sec = SEC_PER_YEAR * f * sizeF * (1 + 0.3 * N);
   const g = (x) => fmt(x, x % 1 ? 1 : 0);
   // preview: one row per duration, one column per power, each cell shows the resulting energy
   const tbl = h("table", { class: "sn-matrix" });
@@ -1696,6 +1692,35 @@ function initSensCard() {
   on.onchange = () => { S.study.sn_on = on.checked; saveStudy(); $("#sn-fields").classList.toggle("disabled", !on.checked); };
   $("#sn-fields").classList.toggle("disabled", !on.checked);
   updateSensEstimate();
+}
+// ---- the piecewise linear AC model: explanation, the power-levels setting, and a figure that follows it
+function initModelCard() {
+  const inp = $("#m-levels"); inp.value = S.study.levels;
+  const levelsNow = () => { const v = Number(inp.value); return isFinite(v) ? Math.min(21, Math.max(3, Math.round(v) | 1)) : 9; };
+  inp.oninput = drawModelCard;
+  inp.onchange = () => { const v = levelsNow(); inp.value = v; S.study.levels = v; saveStudy(); S.dirty = true; drawModelCard(); };
+  drawModelCard();
+}
+function drawModelCard() {
+  const fig = $("#pw-fig"), info = $("#pw-info"); if (!fig) return;
+  const raw = Number($("#m-levels").value), n = isFinite(raw) ? Math.min(21, Math.max(3, Math.round(raw) | 1)) : 9;
+  const P = Math.max(0.1, Number(S.study.mw) || 4), W = 520, H = 190, pl = 44, pr = 14, pt = 14, pb = 40, cw = W - pl - pr, ch = H - pt - pb;
+  const curve = (u) => 34 + 22 * u + 30 * u * u;                           // an example of a loading curve: grows faster when the battery charges
+  const lo = curve(-0.37), hi = curve(1), sx = (u) => pl + (u + 1) / 2 * cw, sy = (y) => pt + ch - (y - 20) / (hi - 20) * ch;
+  const us = Array.from({ length: n }, (_, i) => -1 + 2 * i / (n - 1));
+  let g = `<rect x="${pl}" y="${pt}" width="${cw}" height="${ch}" fill="none" stroke="${cssVar("--line")}"/>`;
+  g += `<line x1="${sx(0)}" y1="${pt}" x2="${sx(0)}" y2="${pt + ch}" stroke="${cssVar("--grid")}" stroke-dasharray="3 3"/>`;
+  let d = ""; for (let i = 0; i <= 80; i++) { const u = -1 + 2 * i / 80; d += (i ? "L" : "M") + sx(u).toFixed(1) + " " + sy(curve(u)).toFixed(1); }
+  g += `<path d="${d}" fill="none" stroke="${cssVar("--muted")}" stroke-width="1.5" stroke-dasharray="4 3" opacity=".8"/>`;
+  g += `<polyline points="${us.map((u) => sx(u).toFixed(1) + "," + sy(curve(u)).toFixed(1)).join(" ")}" fill="none" stroke="${cssVar("--accent")}" stroke-width="2.4"/>`;
+  g += us.map((u) => `<circle cx="${sx(u).toFixed(1)}" cy="${sy(curve(u)).toFixed(1)}" r="${n > 13 ? 3 : 4.2}" fill="${Math.abs(u) < 1e-9 ? cssVar("--before") : cssVar("--accent")}" stroke="${cssVar("--panel")}" stroke-width="1.5"/>`).join("");
+  const lab = (x, t, a = "middle") => `<text x="${x}" y="${H - 22}" text-anchor="${a}" font-size="11" font-family="IBM Plex Mono, monospace" fill="${cssVar("--ink-2")}">${t}</text>`;
+  g += lab(sx(-1), `−${fmt(P, P % 1 ? 1 : 0)} MW`, "start") + lab(sx(0), "0") + lab(sx(1), `+${fmt(P, P % 1 ? 1 : 0)} MW`, "end");
+  g += `<text x="${pl + cw / 2}" y="${H - 5}" text-anchor="middle" font-size="11.5" fill="${cssVar("--muted")}">Battery power: charging ← → discharging</text>`;
+  g += `<text transform="translate(12 ${pt + ch / 2}) rotate(-90)" text-anchor="middle" font-size="11.5" fill="${cssVar("--muted")}">Element loading</text>`;
+  fig.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:auto" role="img" aria-label="Loading of an element at ${n} battery power levels, joined by straight lines">${g}</svg>`;
+  const step = 2 * P / (n - 1), hrs = periodHours();
+  info.textContent = `${n} levels from −${fmt(P, P % 1 ? 1 : 0)} to +${fmt(P, P % 1 ? 1 : 0)} MW: one measurement every ${fmt(step, 2)} MW. Level 0 MW is the network without a battery, so ${n - 1} extra AC load flows per hour, about ${(n - 1) * hrs} for ${hrs / 24} days, for each battery placement.`;
 }
 function applyBatteryMode() {
   const on = S.study.battery !== false;
@@ -1813,13 +1838,13 @@ async function uploadCsv(file) {
   S.study.start = start; S.study.days = Math.floor(ghi.length / 24); $("#w-start").value = start; $("#w-days").value = S.study.days; saveStudy();
   S.weather = { source: "csv", start, ghi, wind }; renderWeatherStatus(); updateEstimate(); toast(`Loaded ${ghi.length} hours from ${file.name}.`);
 }
-const SEC_PER_YEAR = { tangent: 14, tangent_hourly: 24, piecewise: 55 };
+const SEC_PER_YEAR = 55;                       // rough seconds per year of weather for one placement
 function nWorkers() { const c = navigator.hardwareConcurrency || 2; return Math.max(1, Math.min(4, Math.floor(c / 2))); }
 function updateEstimate() {
   if (!S.spec) return;
   const f = periodHours() / 8760; const sizeF = Math.max(1, (S.spec.buses.length / 15) ** 1.6) * Math.max(1, elementList().length / 17);
   if (S.study.battery === false) { const s0 = 3 * f * sizeF + 1; $("#r-est").textContent = `Load flow for ${periodHours()} hours · estimated time on this device: ${Math.max(1, Math.round(s0))} s`; return; }
-  let s = (SEC_PER_YEAR[S.study.model] * f * sizeF + 2);
+  let s = (SEC_PER_YEAR * f * sizeF + 2);
   const nb = candidates().length;
   if (S.study.mode === "all") s = s * nb / (s * nb > 60 ? nWorkers() : 1) + (s * nb > 60 ? 10 : 0);
   $("#r-est").textContent = `Estimated time on this device: ${s < 60 ? Math.max(1, Math.round(s)) + " s" : Math.round(s / 60) + " min"}` + (S.study.mode === "all" ? ` · ${nb} placements` : "");
@@ -1919,7 +1944,7 @@ function setProgress(stage, frac) {
 function settingsPayload() {
   const s = S.study;
   return { battery_mw: s.mw, battery_mwh: s.mwh, eta_c: s.eta_c / 100, eta_d: s.eta_d / 100, soc_init: s.soc / 100, dt_h: 1,
-    probe_mw: s.probe, n_levels: Math.max(3, Math.round(s.levels) | 1), weight_line: s.wl, weight_trafo: s.wt, throughput_cost: s.price ? s.wear : 0,
+    n_levels: Math.max(3, Math.round(s.levels) | 1), weight_line: s.wl, weight_trafo: s.wt, throughput_cost: s.price ? s.wear : 0,
     load_factor: s.load_f, der_factor: s.der_f,
     profit_priority: !!(s.lx_on && s.price), grid_priority_pct: s.lx_pct,
     pv_stc_w_m2: s.g_stc, pv_performance_ratio: s.g_pr / 100, wind_v_in: s.g_vin, wind_v_rated: s.g_vrated, wind_v_out: s.g_vout, wind_exponent: s.g_exp };
@@ -1959,15 +1984,15 @@ async function runStudy() {
       S.results = { kind: "loadflow", base, meta, lf, single: null, ranking: null };
     } else if (s.mode === "one") {
       if (priceJson) {
-        const cmp = await engine.json("compare_bus", [s.bus, s.objective, s.model], (st, f) => setProgress(st, 0.1 + 0.85 * f));
+        const cmp = await engine.json("compare_bus", [s.bus, s.objective], (st, f) => setProgress(st, 0.1 + 0.85 * f));
         S.results = { kind: "one", base, meta, single: cmp.grid_plan, compare: cmp, ranking: null };
       } else {
-        const r = await engine.json("run_bus", [s.bus, s.objective, s.model], (st, f) => setProgress(st, 0.1 + 0.85 * f));
+        const r = await engine.json("run_bus", [s.bus, s.objective], (st, f) => setProgress(st, 0.1 + 0.85 * f));
         S.results = { kind: "one", base, meta, single: r, ranking: null };
       }
     } else {
       const buses = candidates().map((b) => b.id);
-      const est = SEC_PER_YEAR[s.model] * n / 8760 * buses.length;
+      const est = SEC_PER_YEAR * n / 8760 * buses.length;
       const k = est > 60 ? Math.min(nWorkers(), buses.length) : 1;
       const parts = Array.from({ length: k }, (_, i) => buses.filter((_, j) => j % k === i));
       const fr = new Array(k).fill(0);
@@ -1977,7 +2002,7 @@ async function runStudy() {
       const jobs = parts.map(async (p, i) => {
         const e = engines[i];
         if (i > 0) { setProgress(`Starting ${k} parallel engines`, 0.08); await e.readyP; await e.json("new_study", [spec, ghi, wind, set, priceJson]); }
-        return e.json("run_all", [s.objective, s.model, JSON.stringify(p)], tick(i));
+        return e.json("run_all", [s.objective, JSON.stringify(p)], tick(i));
       });
       const all = (await Promise.all(jobs)).flat();
       pool.forEach((e) => e.terminate()); pool = [];
@@ -2030,7 +2055,7 @@ function renderResults() {
   }
   const m = R.meta, st = m.study;
   const objTxt = st.objective === "minmax" ? "Objective 1 · lower the average peak" : `Objective 3 · weighted squared peaks (lines ${st.wl}, transformers ${st.wt})`;
-  const modelTxt = { tangent: "sensitivity at peak hour", tangent_hourly: "hourly sensitivities", piecewise: "piecewise linear AC model" }[st.model];
+  const modelTxt = "piecewise linear AC model";
   const sub = `${m.spec.name || "Network"} · ${m.weather.start} to ${addDays(m.weather.start, Math.ceil(m.weather.hours / 24) - 1)} · ${m.weather.source === "synthetic" ? "synthetic weather" : "measured weather"}`;
   const title = R.kind === "loadflow" ? "Load flow" : R.kind === "all" ? "Where should the battery go?" : `Battery at ${R.single.bus_name}`;
   const chips = R.kind === "loadflow" ? [h("span", { class: "chip" }, `${m.weather.hours} hours`), h("span", { class: "chip" }, "No battery")]
@@ -2227,7 +2252,7 @@ function renderCompare(root, c) {
   ro.observe(card); charts.push({ destroy: () => ro.disconnect() });
   const notes = [];
   if (c.revenue_plan.simultaneous_mwh > 0.05) notes.push("The revenue plan charged and discharged at the same time.");
-  if (c.grid_plan.simultaneous_mwh > 0.05) notes.push(`The grid-friendly plan used the linear model, which charged and discharged at the same time (${fmt(c.grid_plan.simultaneous_mwh, 1)} MWh); its revenue is therefore approximate. The piecewise model avoids this.`);
+  if (c.grid_plan.simultaneous_mwh > 0.05) notes.push(`The grid-friendly plan charged and discharged at the same time (${fmt(c.grid_plan.simultaneous_mwh, 1)} MWh); its revenue is therefore approximate.`);
   if (st.wear > 0) notes.push(`Revenue includes a wear cost of ${fmt(st.wear, 0)} ${cur} per MWh through the battery.`);
   notes.push("Spot price only: no tariffs, taxes or balancing, and the battery does not move the price. Revenue is the net sum of price × energy over the period.");
   card.append(h("div", { class: "note", style: { marginTop: "12px" } }, notes.join(" ")));
@@ -2312,13 +2337,13 @@ function renderSelector() {
 // One placement in full detail (schedule, loadings, and the revenue plan when prices are on).
 async function fetchPlacement(bus, prog) {
   const st = S.results.meta.study;
-  if (S.results.meta.price) { const cmp = await engine.json("compare_bus", [bus, st.objective, st.model], prog); return { single: cmp.grid_plan, compare: cmp }; }
-  return { single: await engine.json("run_bus", [bus, st.objective, st.model], prog), compare: null };
+  if (S.results.meta.price) { const cmp = await engine.json("compare_bus", [bus, st.objective], prog); return { single: cmp.grid_plan, compare: cmp }; }
+  return { single: await engine.json("run_bus", [bus, st.objective], prog), compare: null };
 }
-// Battery size sensitivity for one placement: weighted squared peaks for every (MW, MWh) combination. Always the piecewise AC model.
+// Battery size sensitivity for one placement: weighted squared peaks for every (MW, duration) combination.
 async function runSensitivity(bus, prog) {
   const st = S.results.meta.study, { mw, hours } = sensSizes();
-  const r = await engine.json("sensitivity", [bus, st.objective, "piecewise", JSON.stringify(mw), JSON.stringify(hours)], prog);
+  const r = await engine.json("sensitivity", [bus, st.objective, JSON.stringify(mw), JSON.stringify(hours)], prog);
   r.current = { mw: st.mw, mwh: st.mwh }; return r;
 }
 async function openPlacement(bus) {
@@ -2357,7 +2382,7 @@ function renderDetail(root, r) {
   chips.append(chip(`Voltage ${fmt(r.vm_min_after, 3)}–${fmt(r.vm_max_after, 3)} pu (before ${fmt(r.vm_min_before, 3)}–${fmt(r.vm_max_before, 3)})`, r.vm_min_after < 0.9 || r.vm_max_after > 1.1 ? "crit" : null));
   chips.append(chip(`Hours with an overload: ${r.hours_overloaded_before} → ${r.hours_overloaded_after}`, r.hours_overloaded_after ? "crit" : "good"));
   chips.append(chip(`TSO exchange σ ${fmt(r.tso_std_before_mw, 2)} → ${fmt(r.tso_std_after_mw, 2)} MW`));
-  if (r.simultaneous_mwh > 0.05) chips.append(chip(`The linear model charged and discharged at the same time (${fmt(r.simultaneous_mwh, 1)} MWh). The piecewise model avoids this.`, "warn"));
+  if (r.simultaneous_mwh > 0.05) chips.append(chip(`The plan charged and discharged at the same time (${fmt(r.simultaneous_mwh, 1)} MWh).`, "warn"));
   if (r.soc_min_mwh < -1e-3 || r.soc_max_mwh > st.mwh + 1e-3) chips.append(chip("The schedule leaves the battery’s energy limits when run physically.", "crit"));
   chips.append(chip(`Solved in ${fmt((r.timing.model_s || 0) + (r.timing.optimise_s || 0) + (r.timing.validate_s || 0), 1)} s`));
   root.append(chips);
