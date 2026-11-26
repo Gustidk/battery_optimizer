@@ -587,7 +587,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "ec827a0aa0";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "33466fe52c";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -1002,7 +1002,15 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq, arrows
     return `<path d="${d}" fill="none" stroke="${panel}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
   };
   const LW = 70, LH = 11;                                         // every value box has the same fixed size, so the layout does not depend on the numbers
-  const reqs = [], obst = [], segs = [], arrows = [];            // value boxes to place, things they must not cover, line sample points, arrows
+  const reqs = [], obst = [], segs = [], arrows = [], extraTxt = [];
+  const busRects = [];                                            // bars, names and the symbols hanging under them: arrows keep clear of these
+  for (const b of spec.buses) {
+    const [x, y] = P(b), hl = hlOf.get(b.id) || 20, nm = String(b.name || `Bus ${b.id}`);
+    busRects.push([x - hl - 3, y - 6, x + hl + 3, y + 6], [x - hl - 10 - nm.length * 6.4, y - 9, x - hl - 3, y + 10]);
+    for (const a of attach.get(b.id) || []) if (a.ox != null) busRects.push([a.ox - 9, y, a.ox + 9, y + 40]);
+    if (battery && battery.ox != null && Number(battery.bus) === b.id) busRects.push([battery.ox - 30, y, battery.ox + 30, y + 56]);
+  }
+  const hitsRect = (x, y, r) => busRects.some((q) => x + r > q[0] && x - r < q[2] && y + r > q[1] && y - r < q[3]);            // value boxes to place, things they must not cover, line sample points, arrows
   // ---- branches
   const bsegs = [], usedAnch = [];
   for (const [kind, list, fa, fb] of [["line", spec.lines, "from_bus", "to_bus"], ["trafo", spec.trafos, "hv_bus", "lv_bus"]]) for (const e of list) {
@@ -1024,10 +1032,11 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq, arrows
     let t = 0.5;
     if (!tr) {
       let bestS = -Infinity;
-      for (const tt of [0.5, 0.4, 0.6, 0.3, 0.7, 0.22, 0.78]) {
+      for (const tt of [0.5, 0.45, 0.55, 0.4, 0.6, 0.35, 0.65, 0.3, 0.7, 0.25, 0.75, 0.2, 0.8, 0.16, 0.84]) {
         const px = x1 + (x2 - x1) * tt, py = y1 + (y2 - y1) * tt; let m = Infinity;
         for (const s of bsegs) if (s.id !== key) m = Math.min(m, dseg(px, py, s));
         for (const u of usedAnch) m = Math.min(m, Math.hypot(px - u[0], py - u[1]) - 24);
+        if (hitsRect(px, py, 11)) m -= 100;
         if (m >= 14) { t = tt; break; }
         if (m > bestS) { bestS = m; t = tt; }
       }
@@ -1040,7 +1049,8 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq, arrows
     if (tr) obst.push([mx - 20, my - 14, mx + 20, my + 14]);
     let nx = -oy, ny = ox; if (nx < -0.01 || (Math.abs(nx) <= 0.01 && ny < 0)) { nx = -nx; ny = -ny; }
     const rows = [{ t: `${n2(Math.abs(ps))} MW` }, ...(fq ? [{ t: `${n2(qs)} Mvar` }] : []), { t: `${fmt(dd.loading, 0)} %`, col: heat(dd.loading), bold: true }];
-    reqs.push({ key, ax: mx, ay: my, w: LW, h: rows.length * LH + 4, pref: Math.atan2(ny, nx), pref2: Math.atan2(-ny, -nx), r0: tr ? 16 : 6, rows });
+    if (arrowsOnly) reqs.push({ key, ax: mx, ay: my, w: 32, h: LH + 4, pref: Math.atan2(ny, nx), pref2: Math.atan2(-ny, -nx), r0: tr ? 16 : 6, rows: [{ t: `${fmt(dd.loading, 0)} %` }] });
+    else reqs.push({ key, ax: mx, ay: my, w: LW, h: rows.length * LH + 4, pref: Math.atan2(ny, nx), pref2: Math.atan2(-ny, -nx), r0: tr ? 16 : 6, rows });
   };
   for (const l of spec.lines) br("line", l, l.from_bus, l.to_bus);
   for (const t of spec.trafos) br("trafo", t, t.hv_bus, t.lv_bus);
@@ -1058,7 +1068,7 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq, arrows
       if (Math.abs(d.p) > 0.0005) arrows.push(arrow(a.ox, y + 7, 0, dirn, 5, acol));
       obst.push([a.ox - 8, y, a.ox + 8, y + 26 + dy]);
       const rows = [{ t: `${n2(d.p)} MW`, col }, ...(fq ? [{ t: `${n2(d.q)} Mvar`, col }] : [])];
-      reqs.push({ key: `${a.kind}:${a.e.id}`, ax: a.ox, ay: y + 26 + dy, w: LW, h: rows.length * LH + 4, pref: a.kind === "load" ? Math.PI * 0.4 : Math.PI * 0.6, pref2: null, r0: 3, rows, col });
+      if (!arrowsOnly) reqs.push({ key: `${a.kind}:${a.e.id}`, ax: a.ox, ay: y + 26 + dy, w: LW, h: rows.length * LH + 4, pref: a.kind === "load" ? Math.PI * 0.4 : Math.PI * 0.6, pref2: null, r0: 3, rows, col });
     }
   }
   for (const g of spec.ext_grids) {
@@ -1067,22 +1077,17 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq, arrows
     if (Math.abs(d.p) > 0.0005) arrows.push(arrow(x, y - 8, 0, d.p >= 0 ? 1 : -1, 5, ink));
     obst.push([x - 11, y - 36, x + 11, y]);
     const rows = [{ t: d.p >= 0 ? "TSO import" : "TSO export" }, { t: `${n2(Math.abs(d.p))} MW` }, ...(fq ? [{ t: `${n2(d.q)} Mvar` }] : [])];
-    reqs.push({ key: `ext:${g.bus}`, ax: x + 11, ay: y - 24, w: LW, h: rows.length * LH + 4, pref: 0, pref2: null, r0: 3, rows });
+    if (!arrowsOnly) reqs.push({ key: `ext:${g.bus}`, ax: x + 11, ay: y - 24, w: LW, h: rows.length * LH + 4, pref: 0, pref2: null, r0: 3, rows });
   }
   if (battery && battery.ox != null) {
     const b = busById(battery.bus), y = P(b)[1], p = battery.p || 0, ox = battery.ox, bat = cssVar("--battery");
     if (Math.abs(p) > 0.005) arrows.push(arrow(ox, y + 7, 0, p > 0 ? -1 : 1, 5, bat));
     obst.push([ox - 10, y, ox + 10, y + 28]);
-    reqs.push({ key: "battery", ax: ox, ay: y + 28, w: LW, h: 2 * LH + 4, pref: Math.PI * 0.6, pref2: null, r0: 3, col: bat,
+    if (arrowsOnly) {
+      obst.push([ox - 30, y + 28, ox + 30, y + 54]);
+      extraTxt.push(`<text class="flow" text-anchor="middle" style="fill:${bat};font-weight:700"><tspan x="${ox}" y="${y + 40}">${p > 0.005 ? "discharging" : p < -0.005 ? "charging" : "idle"}</tspan><tspan x="${ox}" y="${y + 51}">${n2(Math.abs(p))} MW</tspan></text>`);
+    } else reqs.push({ key: "battery", ax: ox, ay: y + 28, w: LW, h: 2 * LH + 4, pref: Math.PI * 0.6, pref2: null, r0: 3, col: bat,
       rows: [{ t: p > 0.005 ? "discharging" : p < -0.005 ? "charging" : "idle", col: bat }, { t: `${n2(Math.abs(p))} MW`, col: bat }] });
-  }
-  if (arrowsOnly) {                                               // simple view: arrows, plus the battery's power in the hour
-    out.push(...arrows);
-    if (battery && battery.ox != null) {
-      const by = P(busById(battery.bus))[1], pw = battery.p || 0, bat = cssVar("--battery");
-      out.push(`<text class="flow" text-anchor="middle" style="fill:${bat};font-weight:700"><tspan x="${battery.ox}" y="${by + 40}">${pw > 0.005 ? "discharging" : pw < -0.005 ? "charging" : "idle"}</tspan><tspan x="${battery.ox}" y="${by + 51}">${n2(Math.abs(pw))} MW</tspan></text>`);
-    }
-    return;
   }
   // ---- automatic placement of the value boxes (only depends on the zoom, so it is cached)
   const ck = k.toFixed(3) + (fq ? "q" : "p");
@@ -1145,7 +1150,7 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq, arrows
     const mid = (x0 + x1) / 2;
     txt.push(`<text class="flow" text-anchor="middle"${q.col ? ` style="fill:${q.col}"` : ""}>${q.rows.map((r, i) => `<tspan x="${mid}" y="${y0 + 11 + i * LH}"${r.col && r.bold ? ` style="fill:${r.col};font-weight:700"` : ""}>${r.t}</tspan>`).join("")}</text>`);
   }
-  out.push(...lead, ...arrows, ...txt);
+  out.push(...lead, ...arrows, ...txt, ...extraTxt);
 }
 function detailMaps(d, spec) {
   const out = { branches: {}, buses: {}, ext: {}, loads: {}, sgens: {}, battery_i: null, losses: d.losses_mw };
@@ -2696,7 +2701,7 @@ function mapCard(r, opts = {}) {
     const det = adv ? dcache.get(dkey(hour, mode)) || null : null;
     if (adv && !det) return;                              // wait for this hour's values instead of drawing the plain network first
     renderSLD(svg, spec, { view, values: vals, readOnly: true, battery: mode === "after" ? { bus: r.bus, p: r.schedule_mw[hour] } : null,
-      labels: !(fullFlow && det), showVm: false, vm, detail: det, detailMode: flow ? "flow" : "pqi", arrowsOnly: simple, layoutCache, flowQ: S.flowMode !== "p" });
+      labels: !flow, showVm: false, vm, detail: det, detailMode: flow ? "flow" : "pqi", arrowsOnly: simple, layoutCache, flowQ: S.flowMode !== "p" });
     S.spec = keepSpec;
     if (fullFlow && det) {
       const sum = (o) => Object.values(o).reduce((t, x) => t + x.p, 0), m2 = (v) => fmt(v, Math.abs(v) >= 10 ? 1 : 2);
