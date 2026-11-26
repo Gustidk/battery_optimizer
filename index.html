@@ -587,7 +587,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "004c87d528";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "5104cd8140";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -2150,6 +2150,7 @@ function renderResults() {
       rank.replaceWith(renderRanking(24 + extra / n / (sv.clientWidth / 640)));
     });
   } else if (rank || peaks) root.append(rank || peaks);
+  if (R.single && R.single.peaks_after && R.base.elements.length) root.append(freedCard(R.single, R.base.elements));
   if (S.study.battery !== false) root.append(renderSens());
   const detail = h("div", { id: "detail", style: { display: "flex", flexDirection: "column", gap: "14px" } });
   root.append(detail);
@@ -2157,60 +2158,79 @@ function renderResults() {
   if (R.single) renderDetail(detail, R.single);
 }
 // ---- battery size sensitivity: reduction of the weighted squared peaks for every battery power and energy
+// What the battery sizes are compared on: the reduction in per cent, or the capacity freed on the most loaded element in MVA
+const SENS_METRICS = {
+  pct: { label: "Reduction %", name: "reduction", desc: "Reduction of the weighted squared peaks, %", val: (c) => c.reduction_pct, fmt: (v) => fmt(v, 0) + "%", fmt1: (v) => fmt(v, 1) + " %", axis: (q) => fmt(q, 0) + " %", top: 5 },
+  mva: { label: "Freed MVA", name: "freed capacity", desc: "Capacity freed on the most loaded element, MVA", val: (c) => c.freed_mva, fmt: (v) => fmt(v, 2), fmt1: (v) => fmt(v, 2) + " MVA", axis: (q) => fmt(q, 1) + " MVA", top: 0.5 },
+  mw: { label: "MVA per MW", name: "relief per battery MW", desc: "Freed capacity per battery MW, MVA per MW", val: (c) => (c.freed_mva == null ? null : c.freed_mva / c.mw), fmt: (v) => fmt(v, 2), fmt1: (v) => fmt(v, 2) + " MVA per MW", axis: (q) => fmt(q, 2), top: 0.2 },
+  mwh: { label: "MVA per MWh", name: "relief per battery MWh", desc: "Freed capacity per battery MWh, MVA per MWh", val: (c) => (c.freed_mva == null ? null : c.freed_mva / c.mwh), fmt: (v) => fmt(v, 3), fmt1: (v) => fmt(v, 3) + " MVA per MWh", axis: (q) => fmt(q, 3), top: 0.1 },
+};
 function renderSens() {
   const R = S.results, sn = R.sens, card = h("div", { class: "card" });
   const mode = S.sensView || "heat";
   const head = h("div", { class: "row" }, h("h3", {}, "Battery size sensitivity"), h("span", { class: "muted", style: { fontSize: "12.5px" } }, `Reduction of the weighted squared peaks at ${busName(R.selected)}`), h("span", { class: "spacer" }));
   const seg = h("div", { class: "seg" }), bH = h("button", { "aria-pressed": String(mode === "heat") }, "Heat map"), bC = h("button", { "aria-pressed": String(mode === "curves") }, "Curves");
-  seg.append(bH, bC); if (sn) head.append(seg); card.append(head);
+  seg.append(bH, bC);
+  const segM = h("div", { class: "seg", role: "group", "aria-label": "What the sizes are compared on" });
+  const mBtns = Object.entries(SENS_METRICS).map(([key, m]) => { const b = h("button", { "aria-pressed": String((S.sensMetric || "pct") === key), title: m.desc }, m.label); b.dataset.k = key; return b; });
+  segM.append(...mBtns);
+  if (sn) head.append(segM, seg); card.append(head);
   const runBtn = (txt) => { const b = h("button", { class: "btn", style: { marginTop: "10px" } }, txt); b.onclick = async () => {
     b.disabled = true; b.textContent = "Running…"; const prog = (s, f) => { b.textContent = `Running ${Math.round(f * 100)} %`; };
     try { R.sens = await runSensitivity(R.selected, prog); delete R.sensError; } catch (e) { R.sensError = e.message; }
     renderResults(); }; return b; };
   if (R.sensError) card.append(h("div", { class: "note err", style: { marginTop: "8px" }, text: R.sensError }));
   if (!sn) { card.append(h("p", { class: "muted", style: { fontSize: "13px", margin: "8px 0 0" } }, "The size analysis was not part of this run. It tests every combination of battery power and energy set in the Study tab, using the piecewise AC model."), runBtn(`Run for ${busName(R.selected)}`)); return card; }
-  const cells = sn.cells, ok = cells.filter((c) => c.reduction_pct != null);
-  const mx = Math.max(1e-9, ...ok.map((c) => Math.abs(c.reduction_pct)));
-  const best = ok.reduce((b, c) => (!b || c.reduction_pct > b.reduction_pct ? c : b), null);
+  const cells = sn.cells;
+  let M, ok, mx, best;
+  const info = h("p", { class: "muted", style: { fontSize: "12.5px", margin: "6px 0 0" } });
+  const calc = () => {
+    M = SENS_METRICS[S.sensMetric || "pct"];
+    ok = cells.filter((c) => { const v = M.val(c); return v != null && isFinite(v); });
+    mx = Math.max(1e-9, ...ok.map((c) => Math.abs(M.val(c))));
+    best = ok.reduce((b, c) => (!b || M.val(c) > M.val(b) ? c : b), null);
+    info.textContent = `${busName(sn.bus)} · ${sn.mw.length} × ${sn.hours.length} sizes · every size is checked with its own AC load flow. Hover a field for details.` +
+      (best ? ` Largest ${M.name}: ${M.fmt1(M.val(best))} at ${fmt(best.mw, 1)} MW × ${fmt(best.hours, 1)} h (${fmt(best.mwh, 1)} MWh).` : "");
+  };
+  calc(); card.append(info);
   const stale = sn.bus !== R.selected;
-  card.append(h("p", { class: "muted", style: { fontSize: "12.5px", margin: "6px 0 0" } },
-    `${busName(sn.bus)} · ${sn.mw.length} × ${sn.hours.length} sizes · every size is checked with its own AC load flow. Hover a field for details.`,
-    best ? ` Largest reduction: ${fmt(best.reduction_pct, 1)} % at ${fmt(best.mw, 1)} MW × ${fmt(best.hours, 1)} h (${fmt(best.mwh, 1)} MWh).` : ""));
   if (stale) card.append(h("div", { class: "note warn", style: { marginTop: "8px" } }, `This analysis is for ${busName(sn.bus)}, not the chosen node.`), runBtn(`Run for ${busName(R.selected)}`));
   const pick = (mw, hrs) => cells.find((c) => c.mw === mw && c.hours === hrs);
-  const tipTxt = (c) => c.error ? `${fmt(c.mw, 1)} MW × ${fmt(c.hours, 1)} h: ${c.error}` : `${fmt(c.mw, 1)} MW × ${fmt(c.hours, 1)} h = ${fmt(c.mwh, 1)} MWh\nWeighted squared peaks: ${fmtSigned(-c.reduction_pct, 1)} %\nAverage element peak: ${fmt(c.mean_peak_before_pct, 2)} → ${fmt(c.mean_peak_after_pct, 2)} %\nHighest loading: ${fmt(c.max_loading_before_pct, 1)} → ${fmt(c.max_loading_after_pct, 1)} %\nHours overloaded: ${c.hours_overloaded_before} → ${c.hours_overloaded_after}\nFull cycles: ${fmt(c.cycles, 1)}`;
+  const tipTxt = (c) => c.error ? `${fmt(c.mw, 1)} MW × ${fmt(c.hours, 1)} h: ${c.error}` : `${fmt(c.mw, 1)} MW × ${fmt(c.hours, 1)} h = ${fmt(c.mwh, 1)} MWh\nWeighted squared peaks: ${fmtSigned(-c.reduction_pct, 1)} %\nAverage element peak: ${fmt(c.mean_peak_before_pct, 2)} → ${fmt(c.mean_peak_after_pct, 2)} %\nHighest loading: ${fmt(c.max_loading_before_pct, 1)} → ${fmt(c.max_loading_after_pct, 1)} %\nHours overloaded: ${c.hours_overloaded_before} → ${c.hours_overloaded_after}\nFull cycles: ${fmt(c.cycles, 1)}${c.freed_mva != null ? `\nFreed capacity on the most loaded element (${c.bottleneck}): ${fmt(c.freed_mva, 2)} MVA\nPer battery MW: ${fmt(c.freed_mva / c.mw, 2)} MVA · per battery MWh: ${fmt(c.freed_mva / c.mwh, 3)} MVA` : ""}`;
   const body = h("div", { style: { marginTop: "8px" } }); card.append(body);
   const draw = () => {
-    destroySensCharts(); body.innerHTML = "";
+    destroySensCharts(); body.innerHTML = ""; calc();
+    for (const b of mBtns) b.setAttribute("aria-pressed", String(b.dataset.k === (S.sensMetric || "pct")));
     if (S.sensView === "curves") {
       const el = h("div", { class: "chart" }), leg = h("div", { class: "leg", style: { marginTop: "6px" } });
-      body.append(h("div", { class: "eyebrow" }, "Reduction of the weighted squared peaks, % · by battery power, one line per battery duration"), el, leg);
+      body.append(h("div", { class: "eyebrow" }, `${M.desc} · by battery power, one line per battery duration`), el, leg);
       const n = sn.hours.length, dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
       const col = (i) => `hsl(172 ${55}% ${dark ? 38 + 38 * i / Math.max(1, n - 1) : 72 - 44 * i / Math.max(1, n - 1)}%)`;
-      const data = [sn.mw, ...sn.hours.map((e) => sn.mw.map((m) => { const c = pick(m, e); return c && c.reduction_pct != null ? c.reduction_pct : null; }))];
+      const data = [sn.mw, ...sn.hours.map((e) => sn.mw.map((m) => { const c = pick(m, e); const v = c ? M.val(c) : null; return v != null && isFinite(v) ? v : null; }))];
       sn.hours.forEach((e, i) => { const s = h("span", {}), d = h("i"); d.style.background = col(i); s.append(d, `${fmt(e, e % 1 ? 1 : 0)} h`); leg.append(s); });
       const axisC = cssVar("--muted"), gridC = cssVar("--grid");
-      const u = new uPlot({ plugins: [valueTip()], width: Math.max(280, card.clientWidth - 40), height: 260, padding: [8, 26, 0, 0], legend: { show: false }, cursor: { points: { size: 7 } }, scales: { x: { time: false }, y: { range: (u2, lo, hi) => [Math.min(0, lo), Math.max(5, hi * 1.08)] } },
+      const u = new uPlot({ plugins: [valueTip()], width: Math.max(280, card.clientWidth - 40), height: 260, padding: [8, 26, 0, 0], legend: { show: false }, cursor: { points: { size: 7 } }, scales: { x: { time: false }, y: { range: (u2, lo, hi) => [Math.min(0, lo), Math.max(M.top, hi * 1.08)] } },
         axes: [{ stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { stroke: gridC, width: 1 }, font: "11px IBM Plex Sans, system-ui", values: (u2, v) => v.map((q) => fmt(q, q % 1 ? 1 : 0) + " MW"), splits: () => sn.mw },
-          { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, font: "11px IBM Plex Mono, monospace", size: 50, values: (u2, v) => v.map((q) => fmt(q, 0) + " %") }],
+          { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, font: "11px IBM Plex Mono, monospace", size: 62, values: (u2, v) => v.map((q) => M.axis(q)) }],
         series: [{}, ...sn.hours.map((e, i) => ({ stroke: col(i), width: 2, points: { show: true, size: 6 }, spanGaps: false }))] }, data, el);
       sensCharts.push(u);
     } else {
       const nx = sn.mw.length, ny = sn.hours.length, W = 640, padL = 78, padB = 44, padT = 8, padR = 10, cw = (W - padL - padR) / nx, ch = Math.min(52, 330 / ny), H = padT + ny * ch + padB;
       let s = "";
       sn.hours.forEach((e, j) => { const y = padT + (ny - 1 - j) * ch; s += `<text x="${padL - 8}" y="${y + ch / 2 + 4}" text-anchor="end" font-size="11.5" fill="${cssVar("--ink-2")}" font-family="IBM Plex Mono, monospace">${fmt(e, e % 1 ? 1 : 0)} h</text>`;
-        sn.mw.forEach((m, i) => { const c = pick(m, e), x = padL + i * cw, v = c && c.reduction_pct != null ? c.reduction_pct : null;
+        sn.mw.forEach((m, i) => { const c = pick(m, e), x = padL + i * cw, v = c && M.val(c) != null && isFinite(M.val(c)) ? M.val(c) : null;
           const isBest = best && c === best, isCur = sn.current && Math.abs(m - sn.current.mw) < 1e-6 && Math.abs(m * e - sn.current.mwh) < 1e-6;
           const fill = v == null ? cssVar("--grid") : v < 0 ? cssVar("--crit") : cssVar("--accent"), op = v == null ? 1 : v < 0 ? Math.min(0.9, 0.2 + 0.7 * Math.abs(v) / mx) : 0.1 + 0.88 * (v / mx), light = op > 0.55;
           s += `<g><title>${esc(c ? tipTxt(c) : "")}</title><rect x="${x + 1}" y="${y + 1}" width="${cw - 2}" height="${ch - 2}" rx="4" fill="${fill}" fill-opacity="${op}" ${isBest ? `stroke="${cssVar("--ink")}" stroke-width="2"` : isCur ? `stroke="${cssVar("--battery")}" stroke-width="2" stroke-dasharray="4 3"` : ""}/>`;
-          s += `<text x="${x + cw / 2}" y="${y + ch / 2 + 4}" text-anchor="middle" font-size="12.5" font-weight="600" font-family="IBM Plex Mono, monospace" fill="${light ? cssVar("--accent-ink") : cssVar("--ink")}">${v == null ? "–" : fmt(v, 0) + "%"}</text></g>`; }); });
+          s += `<text x="${x + cw / 2}" y="${y + ch / 2 + 4}" text-anchor="middle" font-size="12.5" font-weight="600" font-family="IBM Plex Mono, monospace" fill="${light ? cssVar("--accent-ink") : cssVar("--ink")}">${v == null ? "–" : M.fmt(v)}</text></g>`; }); });
       sn.mw.forEach((m, i) => { s += `<text x="${padL + i * cw + cw / 2}" y="${padT + ny * ch + 16}" text-anchor="middle" font-size="11.5" fill="${cssVar("--ink-2")}" font-family="IBM Plex Mono, monospace">${fmt(m, m % 1 ? 1 : 0)}</text>`; });
       s += `<text x="${padL + (W - padL - padR) / 2}" y="${H - 6}" text-anchor="middle" font-size="12" fill="${cssVar("--muted")}">Battery power, MW</text><text transform="translate(14 ${padT + ny * ch / 2}) rotate(-90)" text-anchor="middle" font-size="12" fill="${cssVar("--muted")}">Battery duration, hours</text>`;
-      const svg = svgEl({ viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: "max-width:100%;height:auto", role: "img", "aria-label": "Reduction of the weighted squared peaks by battery power and duration" }); svg.innerHTML = s;
+      const svg = svgEl({ viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: "max-width:100%;height:auto", role: "img", "aria-label": `${M.desc} by battery power and duration` }); svg.innerHTML = s;
       body.append(h("div", { style: { overflowX: "auto" } }, svg),
-        h("div", { class: "leg", style: { marginTop: "4px" } }, h("span", {}, "Darker = bigger reduction"), h("span", {}, "Solid frame: largest reduction"), h("span", {}, "Dashed frame: the battery size in the Study tab")));
+        h("div", { class: "leg", style: { marginTop: "4px" } }, h("span", {}, `Darker = bigger ${M.name}`), h("span", {}, `Solid frame: largest ${M.name}`), h("span", {}, "Dashed frame: the battery size in the Study tab")));
     }
   };
+  for (const b of mBtns) b.onclick = () => { S.sensMetric = b.dataset.k; draw(); };
   bH.onclick = () => { S.sensView = "heat"; bH.setAttribute("aria-pressed", "true"); bC.setAttribute("aria-pressed", "false"); draw(); };
   bC.onclick = () => { S.sensView = "curves"; bC.setAttribute("aria-pressed", "true"); bH.setAttribute("aria-pressed", "false"); draw(); };
   if (!S.sensView) S.sensView = "heat";
@@ -2356,7 +2376,7 @@ function renderRanking(rowH = 24) {
   card.append(h("div", { style: { overflowX: "auto", marginTop: "8px" } }, svg));
   // table
   const tbl = h("table", { class: "t rank" });
-  tbl.append(h("thead", {}, h("tr", {}, ...["Rank", "Placement", "Average peak", "Highest loading", "Weighted squared peaks", "Hours overloaded", "TSO exchange σ", "Cycles", ...(R.meta.price ? [`Revenue (${R.meta.price.currency})`] : [])].map((t) => h("th", {}, t)))));
+  tbl.append(h("thead", {}, h("tr", {}, ...["Rank", "Placement", "Average peak", "Highest loading", "Weighted squared peaks", "Hours overloaded", "TSO exchange σ", "Cycles", "Freed MVA", "MVA per MW", "MVA per MWh", ...(R.meta.price ? [`Revenue (${R.meta.price.currency})`] : [])].map((t) => h("th", {}, t)))));
   const tb = h("tbody");
   sorted.forEach((r, i) => {
     const tr = h("tr", { onclick: () => openPlacement(r.bus) });
@@ -2367,6 +2387,7 @@ function renderRanking(rowH = 24) {
       h("td", { class: "n" }, `${r.hours_overloaded_before} → ${r.hours_overloaded_after}`),
       h("td", { class: "n" }, `${fmt(r.tso_std_before_mw, 2)} → ${fmt(r.tso_std_after_mw, 2)} MW`),
       h("td", { class: "n" }, fmt(r.equivalent_cycles, 1)),
+      ...(() => { const els0 = R.base.elements; if (!r.peaks_after || !els0.length) return [h("td"), h("td"), h("td")]; const f = freedRows(r, els0).bottle.freed; return [h("td", { class: "n" }, fmt(f, 2)), h("td", { class: "n" }, fmt(f / R.meta.study.mw, 2)), h("td", { class: "n" }, fmt(f / R.meta.study.mwh, 3))]; })(),
       ...(R.meta.price ? [h("td", { class: "n" }, fmt(r.revenue, 0))] : []));
     tb.append(tr);
   });
@@ -2514,6 +2535,42 @@ function renderDetail(root, r) {
   root.append(mapCard(r));                                            // the map has a column of controls beside it, so it gets the full width
   const exp = h("div", { class: "row" }, h("button", { class: "btn", onclick: () => showExport("results") }, "Hourly results as CSV"), h("span", { class: "muted", style: { fontSize: "12px" } }, "Every hour: battery power, stored energy and the loading of each line and transformer, with and without battery."));
   root.append(exp);
+}
+// Capacity freed by the battery, per line and transformer: the peak load before minus after, in MVA (loading % x maximum power).
+function freedRows(r, els) {
+  const rows = els.map((e, i) => { const rt = Number(e.rating_mva) || 0, pb = r.peaks_before[i], pa = r.peaks_after[i]; return { i, name: e.name, rt, pb, pa, b: pb * rt / 100, a: pa * rt / 100, freed: (pb - pa) * rt / 100 }; });
+  const bottle = rows.reduce((m, x) => (!m || x.pb > m.pb ? x : m), null);          // the element that is loaded the most without the battery
+  return { rows, bottle };
+}
+function freedCard(r, els) {
+  const st = S.results.meta.study, { rows, bottle } = freedRows(r, els), card = h("div", { class: "card" });
+  card.append(h("div", { class: "chart-title" }, h("h3", {}, "Freed capacity per element"), h("span", { class: "muted" }, "Peak load before − after the battery, in MVA")));
+  const top = rows.reduce((m, x) => (!m || x.freed > m.freed ? x : m), null);
+  const kp = (eyebrow, big, unit, d) => h("div", { class: "kpi" }, h("div", { class: "eyebrow" }, eyebrow), h("div", { class: "big" }, h("span", {}, big), h("span", { class: "from" }, unit)), h("div", { class: "d" }, d));
+  card.append(h("div", { class: "kpis" },
+    kp("On the most loaded element", fmt(bottle.freed, 2), "MVA freed", `${bottle.name}: ${fmt(bottle.b, 2)} → ${fmt(bottle.a, 2)} MVA (${fmt(bottle.pb, 1)} → ${fmt(bottle.pa, 1)} % of ${fmt(bottle.rt, 1)} MVA)`),
+    kp("Relief per battery MW", fmt(bottle.freed / st.mw, 2), "MVA per MW", `${fmt(bottle.freed, 2)} MVA freed by a ${fmt(st.mw, 1)} MW battery`),
+    kp("Relief per battery MWh", fmt(bottle.freed / st.mwh, 3), "MVA per MWh", `${fmt(bottle.freed, 2)} MVA freed by ${fmt(st.mwh, 1)} MWh of storage`),
+    kp("Most freed on one element", fmt(top.freed, 2), "MVA", `${top.name}: ${fmt(top.b, 2)} → ${fmt(top.a, 2)} MVA`)));
+  const sorted = rows.slice().sort((a, b) => b.freed - a.freed);
+  const W = 760, rowH = 24, padL = 196, padR = 190, H = sorted.length * rowH + 18;
+  const mn = Math.min(0, ...sorted.map((x) => x.freed)), mxv = Math.max(1e-9, ...sorted.map((x) => x.freed));
+  const px0 = padL + 44, sx = (v) => px0 + (v - mn) / (mxv - mn) * (W - px0 - padR);      // room on the left for the labels of negative bars
+  let s = `<line x1="${sx(0)}" y1="0" x2="${sx(0)}" y2="${H - 14}" stroke="${cssVar("--line")}"/>`;
+  sorted.forEach((x, k) => {
+    const y = 4 + k * rowH + rowH / 2, isB = x.i === bottle.i, neg = x.freed < 0;
+    s += `<g><rect class="row-hit" x="0" y="${y - rowH / 2}" width="${W}" height="${rowH}"/><title>${esc(x.name)}\nPeak load: ${fmt(x.b, 2)} → ${fmt(x.a, 2)} MVA (${fmt(x.pb, 1)} → ${fmt(x.pa, 1)} % of ${fmt(x.rt, 2)} MVA)\nFreed: ${fmtSigned(x.freed, 2)} MVA</title>`;
+    s += `<text x="2" y="${y + 4}" font-size="11.5" fill="${cssVar("--ink")}" font-weight="${isB ? 700 : 400}">${esc(x.name.length > 22 ? x.name.slice(0, 21) + "…" : x.name)}</text>`;
+    s += `<text x="${padL - 12}" y="${y + 4}" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="${cssVar("--muted")}">${fmt(x.rt, x.rt >= 100 ? 0 : x.rt >= 10 ? 1 : 2)} MVA</text>`;
+    const x0 = sx(Math.min(0, x.freed)), x1 = sx(Math.max(0, x.freed));
+    s += `<rect x="${x0}" y="${y - 7}" width="${Math.max(2, x1 - x0)}" height="14" rx="3" fill="${neg ? cssVar("--crit") : cssVar("--after")}"/>`;
+    s += `<text x="${neg ? x0 - 6 : x1 + 6}" y="${y + 4}" text-anchor="${neg ? "end" : "start"}" font-size="11" font-family="IBM Plex Mono, monospace" fill="${cssVar("--ink-2")}">${fmtSigned(x.freed, 2)}</text>`;
+    s += `<text x="${W - 4}" y="${y + 4}" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="${cssVar("--ink-2")}">${fmt(x.b, 2)} → ${fmt(x.a, 2)} MVA</text></g>`;
+  });
+  const svg = svgEl({ class: "dumb", viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: "max-width:100%;height:auto", role: "img", "aria-label": "Capacity freed on every line and transformer, in MVA" }); svg.innerHTML = s;
+  card.append(h("p", { class: "muted", style: { fontSize: "12px", margin: "10px 0 0" } }, "Bars: how many MVA less the element has to carry at its peak (bold: the most loaded element without the battery, used for the relief per MW and MWh). Left of each bar: the element’s maximum power. Right: peak load before → after. Lines are converted to MVA at their rated voltage."),
+    h("div", { style: { overflowX: "auto", marginTop: "8px" } }, svg));
+  return card;
 }
 function peaksCard(r, els) {
   const single = !r.peaks_after;
