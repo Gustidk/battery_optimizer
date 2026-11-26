@@ -587,7 +587,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "1e0350e87f";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "9d3f2b1d39";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -878,7 +878,8 @@ function renderSLD(svg, spec, opts) {
         // the loading sits beside the line, on its left (above it for a horizontal line), clear of the symbols hanging under the buses
         let nx = -uy, ny = ux; if (nx > 1e-6 || (Math.abs(nx) <= 1e-6 && ny > 0)) { nx = -nx; ny = -ny; }
         const left = Math.abs(nx) > 0.35;
-        out.push(`<text class="val" x="${(mx0 + nx * 8).toFixed(1)}" y="${left ? (my0 + ny * 8 + 4).toFixed(1) : (my0 - 7).toFixed(1)}" text-anchor="${left ? "end" : "middle"}">${fmt(v, 0)}%</text>`);
+        const off = opts.arrowsOnly ? 15 : 8;     // clear of the arrow in the middle of the line
+        out.push(`<text class="val" x="${(mx0 + nx * off).toFixed(1)}" y="${left ? (my0 + ny * off + 4).toFixed(1) : (my0 - off + 1).toFixed(1)}" text-anchor="${left ? "end" : "middle"}">${fmt(v, 0)}%</text>`);
       }
     }
     if (!opts.readOnly || opts.pickable) out.push(`<line class="hit" data-k="${kind}:${e.id}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke-width="14"/>`);
@@ -940,7 +941,7 @@ function renderSLD(svg, spec, opts) {
     else if (k > 0.75 && !opts.readOnly) out.push(`<text class="lbl kv" x="${x - hl - 6}" y="${y + 16}" text-anchor="end">${fmt(b.vn_kv, b.vn_kv < 1 ? 2 : 0)} kV</text>`);
     out.push(`<line class="hit" data-k="bus:${b.id}" x1="${x - hl - 4}" y1="${y}" x2="${x + hl + 4}" y2="${y}" stroke-width="16"/>`);
   }
-  if (opts.detail) (opts.detailMode === "flow" ? flowLabels : advancedLabels)(out, spec, opts.detail, P, hlOf, attach, opts.battery, k, opts.layoutCache, opts.flowQ !== false);
+  if (opts.detail) (opts.detailMode === "flow" ? flowLabels : advancedLabels)(out, spec, opts.detail, P, hlOf, attach, opts.battery, k, opts.layoutCache, opts.flowQ !== false, !!opts.arrowsOnly);
   svg.innerHTML = flowZoom ? `<g transform="translate(${tx0} ${ty0})">${out.join("")}</g>` : out.join("");
 }
 /** PowerFactory-style result boxes: P [MW], Q [Mvar], I [kA] at both ends of every branch
@@ -992,7 +993,7 @@ function advancedLabels(out, spec, D, P, hlOf, attach, battery) {
 }
 /** Power flow view: an arrow on every line and transformer in the direction of the active power,
     with MW, Mvar (at the sending end) and loading %; MW and Mvar on every load and generator. */
-function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq) {
+function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq, arrowsOnly) {
   const n2 = (v) => { const a = Math.abs(v); return fmt(v, a >= 100 ? 0 : a >= 10 ? 1 : 2); };
   const panel = cssVar("--panel"), ink = cssVar("--ink"), muted = cssVar("--muted");
   const arrow = (x, y, ux, uy, s, col) => {                       // open arrow with a shaft, unlike the filled load symbol
@@ -1075,6 +1076,7 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq) {
     reqs.push({ key: "battery", ax: ox, ay: y + 28, w: LW, h: 2 * LH + 4, pref: Math.PI * 0.6, pref2: null, r0: 3, col: bat,
       rows: [{ t: p > 0.005 ? "discharging" : p < -0.005 ? "charging" : "idle", col: bat }, { t: `${n2(Math.abs(p))} MW`, col: bat }] });
   }
+  if (arrowsOnly) { out.push(...arrows); return; }
   // ---- automatic placement of the value boxes (only depends on the zoom, so it is cached)
   const ck = k.toFixed(3) + (fq ? "q" : "p");
   let place = cache && cache.k === ck ? cache.place : null;
@@ -2620,7 +2622,8 @@ function peaksCard(r, els) {
 }
 function mapCard(r, opts = {}) {
   const R = S.results, base = R.base, spec = R.meta.spec, els = base.elements, T = base.hours;
-  const flow = !!S.flowView, adv = !!S.advanced || flow;          // the two detail views never run together
+  const fullFlow = !!S.flowView, simple = !S.advanced && !fullFlow;       // the simple view is the power flow layout with arrows only
+  const flow = fullFlow || simple, adv = !!S.advanced || flow;          // the detail views never run together
   const keep = S.keep; S.keep = null;
   const card = h("div", { class: "card", style: { display: "flex", flexDirection: "column", gap: "10px" } });
   let hour = opts.hour ?? 0;
@@ -2628,7 +2631,7 @@ function mapCard(r, opts = {}) {
   if (keep) hour = Math.min(T - 1, Math.max(0, keep.hour));
   const layoutCache = {};                                       // power flow view: where the value boxes were placed at this zoom
   let mode = r ? (keep && keep.mode === "before" ? "before" : "after") : "before"; let timer = null; let view = null;
-  const wrap = h("div", { class: "mapwrap" + (adv ? " adv" : "") });
+  const wrap = h("div", { class: "mapwrap" + (adv && !simple ? " adv" : "") });
   const side = h("div", { class: "mapside" });                                          // controls in the left column
   const ov = h("div", { class: "mapov" });                                           // controls shown on top of the map in full screen
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("class", "sld"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Network at the selected hour"); wrap.append(svg);
@@ -2675,7 +2678,7 @@ function mapCard(r, opts = {}) {
     els.forEach((e, i) => (vals[elemKey(e.type, e.id)] = L[i]));
     const keepSpec = S.spec; S.spec = spec;              // renderSLD looks buses up in S.spec
     if (!view) {
-      view = fitView(svg, spec, flow ? 120 : adv ? 70 : 46);
+      view = fitView(svg, spec, fullFlow ? 120 : flow ? 70 : adv ? 70 : 46);
       if (adv && !flow && view.k < 1.55) {                       // zoom in so labels have room; pan to explore
         const rc = svg.getBoundingClientRect(); const xs = spec.buses.map((b) => b.x * U), ys = spec.buses.map((b) => b.y * U);
         const k = 1.55, cx = (Math.min(...xs) + Math.max(...xs)) / 2;
@@ -2686,9 +2689,9 @@ function mapCard(r, opts = {}) {
     const det = adv ? dcache.get(dkey(hour, mode)) || null : null;
     if (adv && !det) return;                              // wait for this hour's values instead of drawing the plain network first
     renderSLD(svg, spec, { view, values: vals, readOnly: true, battery: mode === "after" ? { bus: r.bus, p: r.schedule_mw[hour] } : null,
-      labels: !(flow && det), showVm: !adv && view.k > 0.6, vm, detail: det, detailMode: flow ? "flow" : "pqi", layoutCache, flowQ: S.flowMode !== "p" });
+      labels: !(fullFlow && det), showVm: false, vm, detail: det, detailMode: flow ? "flow" : "pqi", arrowsOnly: simple, layoutCache, flowQ: S.flowMode !== "p" });
     S.spec = keepSpec;
-    if (flow && det) {
+    if (fullFlow && det) {
       const sum = (o) => Object.values(o).reduce((t, x) => t + x.p, 0), m2 = (v) => fmt(v, Math.abs(v) >= 10 ? 1 : 2);
       const ld = sum(det.loads), dr = sum(det.sgens), ex = sum(det.ext), bp = mode === "after" ? r.schedule_mw[hour] : 0;
       sumBox.hidden = false;
@@ -2751,9 +2754,9 @@ function mapCard(r, opts = {}) {
     return h("label", { class: "switch", title }, inp, h("span", { class: "track", "aria-hidden": "true" }), label);
   };
   const togs = h("div", { class: "row", style: { gap: "10px", flexDirection: "column", alignItems: "flex-start" } },
-    mkSw("adv-toggle", "P, Q, I and voltage values", "Show P, Q and I at the ends of every line and transformer, on every load and generator, and the voltage on every bus. Cannot be combined with the power flow view.", S.advanced && !flow, (c) => { S.advanced = c; if (c) S.flowView = false; }),
-    mkSw("flow-toggle", "Detailed power flow: amount and direction", "Arrows show which way the active power flows on every line and transformer, with MW, Mvar and loading in %, and the MW and Mvar of every load and generator. Cannot be combined with the P, Q, I view.", flow, (c) => { S.flowView = c; if (c) S.advanced = false; }));
-  if (flow) {
+    mkSw("adv-toggle", "P, Q, I and voltage values", "Show P, Q and I at the ends of every line and transformer, on every load and generator, and the voltage on every bus. Cannot be combined with the power flow view.", S.advanced && !fullFlow, (c) => { S.advanced = c; if (c) S.flowView = false; }),
+    mkSw("flow-toggle", "Detailed power flow: amount and direction", "Adds MW, Mvar and loading in % beside every line and transformer, and the MW and Mvar of every load and generator. Cannot be combined with the P, Q, I view.", fullFlow, (c) => { S.flowView = c; if (c) S.advanced = false; }));
+  if (fullFlow) {
     const seg = h("div", { class: "seg", title: "What the power flow view shows" });
     const bP = h("button", { "aria-pressed": String(S.flowMode === "p") }, "MW only"), bQ = h("button", { "aria-pressed": String(S.flowMode !== "p") }, "MW and Mvar");
     const setM = (m) => { S.flowMode = m; store.set("flowMode", m); S.keep = { hour, mode }; renderResults(); };
@@ -2762,7 +2765,8 @@ function mapCard(r, opts = {}) {
   card.append(h("div", { class: "chart-title" }, h("h3", {}, "Network at a chosen hour"), h("span", { class: "muted" }, sub)), h("div", { class: "mapsplit" }, side, wrap));
   side.append(togs, ctl, sumBox, errNote,
     h("div", { class: "leg" }, h("span", {}, "Loading"), h("span", { class: "heatbar", style: { background: heatGradient() } }), h("span", { class: "mono" }, "0 → 100 %"),
-      flow ? h("span", {}, "Arrows show the direction of active power; the bigger the arrow, the higher the loading (full size at 100 % and above); thicker lines carry more MW. Beside each line: MW (and Mvar, if chosen) at the sending end · loading %. Loads hang below the bus bar to the right of the node and generators below it to the left. The values are placed automatically so they do not cover each other; a thin line links a value to its element when it has to sit further away. Drag to pan, scroll to zoom.") : null,
+      simple ? h("span", {}, "Arrows show the direction of active power; the bigger the arrow, the higher the loading (full size at 100 % and above); thicker lines carry more MW. Loads hang below the bus bar and generators sit below it to the left. Switch on “Detailed power flow” for the numbers. Drag to pan, scroll to zoom.") : null,
+      fullFlow ? h("span", {}, "Arrows show the direction of active power; the bigger the arrow, the higher the loading (full size at 100 % and above); thicker lines carry more MW. Beside each line: MW (and Mvar, if chosen) at the sending end · loading %. Loads hang below the bus bar to the right of the node and generators below it to the left. The values are placed automatically so they do not cover each other; a thin line links a value to its element when it has to sit further away. Drag to pan, scroll to zoom.") : null,
       adv && !flow ? h("span", {}, "Branch ends: P [MW] · Q [Mvar] · I [kA], positive out of the bus · Loads (consumed) and generators (delivered): P · Q · I · Bus boxes: U [kV] · u [pu] · angle [°] · External grid: P · Q · I. Drag to pan, scroll to zoom.") : null));
   if (keep) requestAnimationFrame(() => window.scrollTo({ top: Math.max(0, card.getBoundingClientRect().top + window.scrollY - 80) }));
   requestAnimationFrame(go);
