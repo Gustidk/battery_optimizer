@@ -587,7 +587,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "33466fe52c";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "c65e866fd1";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -2707,11 +2707,11 @@ function mapCard(r, opts = {}) {
       const sum = (o) => Object.values(o).reduce((t, x) => t + x.p, 0), m2 = (v) => fmt(v, Math.abs(v) >= 10 ? 1 : 2);
       const ld = sum(det.loads), dr = sum(det.sgens), ex = sum(det.ext), bp = mode === "after" ? r.schedule_mw[hour] : 0;
       sumBox.hidden = false;
-      sumBox.textContent = `Loads use ${m2(ld)} MW · DER delivers ${m2(dr)} MW · ${ex >= 0 ? "TSO import" : "TSO export"} ${m2(Math.abs(ex))} MW · losses ${m2(det.losses)} MW`
+      sumBox.textContent = `Loads use ${m2(ld)} MW · DER delivers ${m2(dr)} MW · ${ex >= 0 ? "TSO import" : "TSO export"} ${m2(Math.abs(ex))} MW`
         + (mode === "after" ? ` · battery ${bp > 0.005 ? "discharges" : bp < -0.005 ? "charges" : "idle"} ${m2(Math.abs(bp))} MW` : "");
     } else sumBox.hidden = true;
     lbl.textContent = new Date(t0 + hour * 3600e3).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC" })
-      + (det ? ` · losses ${fmt(det.losses, 3)} MW` : "");
+      + "";
   };
   const go = () => { if (adv) want(hour, mode, true); draw(); };
   slider.oninput = () => { hour = Number(slider.value); go(); };
