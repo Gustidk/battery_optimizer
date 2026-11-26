@@ -587,7 +587,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "9d3f2b1d39";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "ec827a0aa0";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -1076,7 +1076,14 @@ function flowLabels(out, spec, D, P, hlOf, attach, battery, k, cache, fq, arrows
     reqs.push({ key: "battery", ax: ox, ay: y + 28, w: LW, h: 2 * LH + 4, pref: Math.PI * 0.6, pref2: null, r0: 3, col: bat,
       rows: [{ t: p > 0.005 ? "discharging" : p < -0.005 ? "charging" : "idle", col: bat }, { t: `${n2(Math.abs(p))} MW`, col: bat }] });
   }
-  if (arrowsOnly) { out.push(...arrows); return; }
+  if (arrowsOnly) {                                               // simple view: arrows, plus the battery's power in the hour
+    out.push(...arrows);
+    if (battery && battery.ox != null) {
+      const by = P(busById(battery.bus))[1], pw = battery.p || 0, bat = cssVar("--battery");
+      out.push(`<text class="flow" text-anchor="middle" style="fill:${bat};font-weight:700"><tspan x="${battery.ox}" y="${by + 40}">${pw > 0.005 ? "discharging" : pw < -0.005 ? "charging" : "idle"}</tspan><tspan x="${battery.ox}" y="${by + 51}">${n2(Math.abs(pw))} MW</tspan></text>`);
+    }
+    return;
+  }
   // ---- automatic placement of the value boxes (only depends on the zoom, so it is cached)
   const ck = k.toFixed(3) + (fq ? "q" : "p");
   let place = cache && cache.k === ck ? cache.place : null;
