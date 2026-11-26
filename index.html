@@ -568,7 +568,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 
 <div class="vmodal" id="video-modal" hidden role="dialog" aria-modal="true" aria-labelledby="video-title">
   <div class="vbox">
-    <div class="row"><h3 id="video-title">How the model works</h3><span class="spacer"></span><button class="btn ghost" id="video-close" type="button" aria-label="Close the video">Close</button></div>
+    <div class="row"><h3 id="video-title">How the model works</h3><span class="muted" style="font-size:12.5px;margin-left:10px">The video can take up to 15 seconds to load</span><span class="spacer"></span><button class="btn ghost" id="video-close" type="button" aria-label="Close the video">Close</button></div>
     <div class="vstage" id="video-stage"></div>
     <div class="row" id="video-foot" style="gap:10px"><span class="muted" id="video-note" style="font-size:12px"></span></div>
   </div>
@@ -587,7 +587,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "8832e9e800";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "004c87d528";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -722,7 +722,7 @@ const S = {
   spec: null, sel: null, tool: "select", pendingBus: null,
   view: { tx: 0, ty: 0, k: 1 }, netView: "diagram", tableTab: "buses",
   check: null, study: (() => { const st = { ...DEFAULT_STUDY, ...store.get("study", {}) }; if (st.v !== 3) { st.v = 3; Object.assign(st, { mode: "all", objective: "quadratic_peak", sn_n: 4, der_f: 20, start: "2025-07-07", days: 7 }); } return st; })(),
-  weather: null, priceData: null, results: null, running: false, dirty: true, advanced: store.get("advanced", false), flowView: store.get("flowView", false), flowMode: store.get("flowMode", "pq"), keep: null, netValues: store.get("netValues", false),
+  weather: null, priceData: null, results: null, running: false, dirty: true, advanced: false, flowView: false, flowMode: store.get("flowMode", "pq"), keep: null, netValues: store.get("netValues", false),
 };
 const U = 70; // px per diagram unit
 
@@ -872,8 +872,14 @@ function renderSLD(svg, spec, opts) {
       if (!hasVals && k > 0.6) out.push(`<text class="lbl kv" x="${mx + 14}" y="${my + 4}">${esc(vgName(vgOf(e)))}</text>`);
     }
     if (hasVals && v != null && opts.labels !== false && L > 34) {
-      const mx = (x1 + x2) / 2 + (kind === "trafo" ? 14 : 6), my = (y1 + y2) / 2 + (kind === "trafo" ? 0 : -3);
-      out.push(`<text class="val" x="${mx}" y="${my}">${fmt(v, 0)}%</text>`);
+      const mx0 = (x1 + x2) / 2, my0 = (y1 + y2) / 2;
+      if (kind === "trafo") out.push(`<text class="val" x="${mx0 + 14}" y="${my0}">${fmt(v, 0)}%</text>`);
+      else {
+        // the loading sits beside the line, on its left (above it for a horizontal line), clear of the symbols hanging under the buses
+        let nx = -uy, ny = ux; if (nx > 1e-6 || (Math.abs(nx) <= 1e-6 && ny > 0)) { nx = -nx; ny = -ny; }
+        const left = Math.abs(nx) > 0.35;
+        out.push(`<text class="val" x="${(mx0 + nx * 8).toFixed(1)}" y="${left ? (my0 + ny * 8 + 4).toFixed(1) : (my0 - 7).toFixed(1)}" text-anchor="${left ? "end" : "middle"}">${fmt(v, 0)}%</text>`);
+      }
     }
     if (!opts.readOnly || opts.pickable) out.push(`<line class="hit" data-k="${kind}:${e.id}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke-width="14"/>`);
   };
@@ -2276,7 +2282,7 @@ function renderCompare(root, c) {
     kp("Hours where they differ", `${x.hours_differ} of ${x.hours}`, `${x.hours_conflict} opposite`, `Opposite = one charges while the other discharges. Correlation ${fmt(x.schedule_correlation, 2)}.`),
     ...(c.grid_plan.lex ? [(() => { const L = c.grid_plan.lex, kept = L.model_reduction_stage1_pct > 1e-9 ? 100 * L.model_reduction_stage2_pct / L.model_reduction_stage1_pct : 100;
       return kp("Profit as second priority", `+${fmt(L.revenue_stage2 - L.revenue_stage1, 0)} ${cur}`, `${fmt(kept, 0)} % of the grid benefit kept`,
-        `Step 1 (grid-friendliness only): ${fmt(L.revenue_stage1, 0)} ${cur}. Step 2: ${fmt(L.revenue_stage2, 0)} ${cur}. Grid benefit in the model: ${fmt(L.model_reduction_stage1_pct, 1)} % → ${fmt(L.model_reduction_stage2_pct, 1)} %.`, "good"); })()] : [])));
+        `Step 1 (grid-friendliness only): ${fmt(L.revenue_stage1, 0)} ${cur}. Step 2: ${fmt(L.revenue_stage2, 0)} ${cur}.`, "good"); })()] : [])));
   const axes = (unit) => [{ stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { stroke: gridC, width: 1 }, font: "11px IBM Plex Sans, system-ui" },
     { stroke: axisC, grid: { stroke: gridC, width: 1 }, ticks: { show: false }, font: "11px IBM Plex Mono, monospace", size: 52, values: (u, v) => v.map((q) => fmt(q, Math.abs(q) < 10 && q % 1 ? 1 : 0) + unit) }];
   root.append(card);
@@ -2456,7 +2462,7 @@ function renderDetail(root, r) {
   let focus = pathIdx.reduce((best, i) => (r.peaks_before[i] > r.peaks_before[best] ? i : best), pathIdx[0]);
   const ts = h("div", { class: "card" });
   const sel = h("select", { class: "cell", style: { width: "auto" } });
-  els.forEach((e, i) => sel.append(h("option", { value: i, selected: i === focus ? true : null }, `${e.name}${r.path.includes(i) ? " · on the battery’s path" : ""}`)));
+  els.forEach((e, i) => sel.append(h("option", { value: i, selected: i === focus ? true : null }, e.name)));
   const readout = h("div", { class: "mono muted", style: { fontSize: "12px", minHeight: "18px" } });
   const zoomBtns = h("div", { class: "seg" });
   const bwk = h("button", { "aria-pressed": "false" }, "Busiest week"), all = h("button", { "aria-pressed": "true" }, "Whole period");
@@ -2515,12 +2521,13 @@ function peaksCard(r, els) {
   const revAvail = !single && !!(cmp0 && cmp0.revenue_plan && cmp0.revenue_plan.bus === r.bus && cmp0.revenue_plan.peaks_after), revOn = revAvail && !!S.showRevPeaks;
   const card = h("div", { class: "card" });
   card.append(...[h("div", { class: "chart-title" }, h("h3", {}, "Peak loading per element"), single ? h("span", { class: "muted" }, "Highest loading of each line and transformer in the period") : null),
-    single ? null : h("div", { class: "leg", style: { marginTop: "6px" } }, (() => { const a = h("span", {}), b = h("span", {}); const i1 = h("i", { class: "dotk" }), i2 = h("i", { class: "dotk" }); i1.style.background = cssVar("--before"); i2.style.background = cssVar("--after"); a.append(i1, "Without battery"); b.append(i2, revOn ? "Grid-friendly plan" : "With battery"); const out = [a, b]; if (revOn) { const c3 = h("span", {}), i3 = h("i", { class: "dotk" }); i3.style.background = cssVar("--battery"); c3.append(i3, "Revenue plan"); out.push(c3); } return [...out, h("span", { class: "muted" }, "Bold: on the battery’s path to the grid")]; })())].filter(Boolean));
+    single ? null : h("div", { class: "leg", style: { marginTop: "6px" } }, (() => { const a = h("span", {}), b = h("span", {}); const i1 = h("i", { class: "dotk" }), i2 = h("i", { class: "dotk" }); i1.style.background = cssVar("--before"); i2.style.background = cssVar("--after"); a.append(i1, "Without battery"); b.append(i2, revOn ? "Grid-friendly plan" : "With battery"); const out = [a, b]; if (revOn) { const c3 = h("span", {}), i3 = h("i", { class: "dotk" }); i3.style.background = cssVar("--battery"); c3.append(i3, "Revenue plan"); out.push(c3); } return out; })())].filter(Boolean));
   if (single) r = { ...r, peaks_after: r.peaks_before, path: r.path || [] };
   // Revenue plan for the same battery position: already validated with an AC load flow in compare_bus, so this costs no extra load flows.
   const rev = revOn ? cmp0.revenue_plan.peaks_after : null;
   const idx = els.map((_, i) => i).sort((a, b) => r.peaks_before[b] - r.peaks_before[a]);
-  const W = 760, rowH = 22, padL = 112, padR = rev ? 160 : 108, H = idx.length * rowH + 28;
+  const W = 760, rowH = 22, padL = 196, padR = rev ? 160 : 108, H = idx.length * rowH + 28;
+  const mva = (i) => Number(els[i].rating_mva) || 0, fmtMva = (v) => fmt(v, v >= 100 ? 0 : v >= 10 ? 1 : 2);
   const mx = Math.max(100, ...r.peaks_before, ...r.peaks_after, ...(rev || []));
   const sx = (v) => padL + (v / mx) * (W - padL - padR);
   const path = new Set(r.path);
@@ -2528,8 +2535,9 @@ function peaksCard(r, els) {
   for (const t of [0, 25, 50, 75, 100]) if (t <= mx) s += `<line x1="${sx(t)}" y1="0" x2="${sx(t)}" y2="${H - 22}" stroke="${cssVar(t === 100 ? "--line" : "--grid")}"/><text x="${sx(t)}" y="${H - 8}" text-anchor="middle" font-size="10" font-family="IBM Plex Mono, monospace" fill="${cssVar("--muted")}">${t}%</text>`;
   idx.forEach((i, row) => {
     const y = 4 + row * rowH + rowH / 2, a = r.peaks_before[i], b = r.peaks_after[i];
-    s += `<g><rect class="row-hit" x="0" y="${y - rowH / 2}" width="${W}" height="${rowH}"/><title>${esc(els[i].name)}: ${single ? fmt(a, 1) + " %" : `${fmt(a, 1)} % → ${fmt(b, 1)} %${rev ? " (revenue plan " + fmt(rev[i], 1) + " %)" : ""}`}</title>`;
-    s += `<text x="2" y="${y + 4}" text-anchor="start" font-size="11.5" fill="${cssVar("--ink")}" font-weight="${path.has(i) ? 600 : 400}">${esc(els[i].name.length > 22 ? els[i].name.slice(0, 21) + "…" : els[i].name)}</text>`;
+    s += `<g><rect class="row-hit" x="0" y="${y - rowH / 2}" width="${W}" height="${rowH}"/><title>${esc(els[i].name)}: ${single ? fmt(a, 1) + " %" : `${fmt(a, 1)} % → ${fmt(b, 1)} %`}${mva(i) > 0 ? `\nMaximum power: ${fmtMva(mva(i))} MVA\nPeak load: ${single ? fmtMva(a * mva(i) / 100) + " MVA" : `${fmtMva(a * mva(i) / 100)} MVA before → ${fmtMva(b * mva(i) / 100)} MVA after the battery`}${rev && !single ? `\nRevenue plan: ${fmt(rev[i], 1)} % (${fmtMva(rev[i] * mva(i) / 100)} MVA)` : ""}` : (rev ? ` (revenue plan ${fmt(rev[i], 1)} %)` : "")}</title>`;
+    s += `<text x="2" y="${y + 4}" text-anchor="start" font-size="11.5" fill="${cssVar("--ink")}" font-weight="400">${esc(els[i].name.length > 22 ? els[i].name.slice(0, 21) + "…" : els[i].name)}</text>`;
+    if (mva(i) > 0) s += `<text x="${padL - 12}" y="${y + 4}" text-anchor="end" font-size="11" font-family="IBM Plex Mono, monospace" fill="${cssVar("--muted")}">${fmtMva(mva(i))} MVA</text>`;
     const cc = rev ? rev[i] : null;
     s += `<line x1="${sx(Math.min(a, b, cc ?? a))}" y1="${y}" x2="${sx(Math.max(a, b, cc ?? b))}" y2="${y}" stroke="${cssVar("--line")}" stroke-width="2"/>`;
     if (single) s += `<circle cx="${sx(a)}" cy="${y}" r="4.5" fill="${a > 100 ? cssVar("--crit") : cssVar("--after")}" stroke="${cssVar("--panel")}" stroke-width="2"/>`;
@@ -2543,7 +2551,7 @@ function peaksCard(r, els) {
     cb.onchange = () => { S.showRevPeaks = cb.checked; card.replaceWith(peaksCard(r0, els)); };
     card.querySelector(".chart-title").append(h("span", { class: "spacer" }), h("label", { class: "switch" }, cb, h("span", { class: "track", "aria-hidden": "true" }), h("span", {}, "Show revenue plan")));
   }
-  card.append(h("div", { style: { overflowX: "auto", marginTop: "8px" } }, svg));
+  card.append(h("p", { class: "muted", style: { fontSize: "12px", margin: "6px 0 0" } }, "Left of each bar: the element’s maximum power in MVA (100 % loading). Hover a row to see its peak in MVA before and after the battery."), h("div", { style: { overflowX: "auto", marginTop: "8px" } }, svg));
   return card;
 }
 function mapCard(r, opts = {}) {
