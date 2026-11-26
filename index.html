@@ -587,7 +587,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "5104cd8140";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "1e0350e87f";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -2173,8 +2173,10 @@ function renderSens() {
   seg.append(bH, bC);
   const segM = h("div", { class: "seg", role: "group", "aria-label": "What the sizes are compared on" });
   const mBtns = Object.entries(SENS_METRICS).map(([key, m]) => { const b = h("button", { "aria-pressed": String((S.sensMetric || "pct") === key), title: m.desc }, m.label); b.dataset.k = key; return b; });
-  segM.append(...mBtns);
-  if (sn) head.append(segM, seg); card.append(head);
+  segM.append(...mBtns); segM.hidden = !S.showMvaSens;
+  const mvaCb = h("input", { type: "checkbox", role: "switch" }); mvaCb.checked = !!S.showMvaSens;
+  const mvaSw = h("label", { class: "switch", title: "Compare the battery sizes on freed capacity in MVA as well" }, mvaCb, h("span", { class: "track", "aria-hidden": "true" }), h("span", {}, "MVA views"));
+  if (sn) head.append(mvaSw, segM, seg); card.append(head);
   const runBtn = (txt) => { const b = h("button", { class: "btn", style: { marginTop: "10px" } }, txt); b.onclick = async () => {
     b.disabled = true; b.textContent = "Running…"; const prog = (s, f) => { b.textContent = `Running ${Math.round(f * 100)} %`; };
     try { R.sens = await runSensitivity(R.selected, prog); delete R.sensError; } catch (e) { R.sensError = e.message; }
@@ -2185,7 +2187,7 @@ function renderSens() {
   let M, ok, mx, best;
   const info = h("p", { class: "muted", style: { fontSize: "12.5px", margin: "6px 0 0" } });
   const calc = () => {
-    M = SENS_METRICS[S.sensMetric || "pct"];
+    M = SENS_METRICS[S.showMvaSens ? (S.sensMetric || "pct") : "pct"];
     ok = cells.filter((c) => { const v = M.val(c); return v != null && isFinite(v); });
     mx = Math.max(1e-9, ...ok.map((c) => Math.abs(M.val(c))));
     best = ok.reduce((b, c) => (!b || M.val(c) > M.val(b) ? c : b), null);
@@ -2200,7 +2202,7 @@ function renderSens() {
   const body = h("div", { style: { marginTop: "8px" } }); card.append(body);
   const draw = () => {
     destroySensCharts(); body.innerHTML = ""; calc();
-    for (const b of mBtns) b.setAttribute("aria-pressed", String(b.dataset.k === (S.sensMetric || "pct")));
+    segM.hidden = !S.showMvaSens; for (const b of mBtns) b.setAttribute("aria-pressed", String(b.dataset.k === (S.sensMetric || "pct")));
     if (S.sensView === "curves") {
       const el = h("div", { class: "chart" }), leg = h("div", { class: "leg", style: { marginTop: "6px" } });
       body.append(h("div", { class: "eyebrow" }, `${M.desc} · by battery power, one line per battery duration`), el, leg);
@@ -2231,6 +2233,7 @@ function renderSens() {
     }
   };
   for (const b of mBtns) b.onclick = () => { S.sensMetric = b.dataset.k; draw(); };
+  mvaCb.onchange = () => { S.showMvaSens = mvaCb.checked; draw(); };
   bH.onclick = () => { S.sensView = "heat"; bH.setAttribute("aria-pressed", "true"); bC.setAttribute("aria-pressed", "false"); draw(); };
   bC.onclick = () => { S.sensView = "curves"; bC.setAttribute("aria-pressed", "true"); bH.setAttribute("aria-pressed", "false"); draw(); };
   if (!S.sensView) S.sensView = "heat";
@@ -2545,13 +2548,17 @@ function freedRows(r, els) {
 function freedCard(r, els) {
   const st = S.results.meta.study, { rows, bottle } = freedRows(r, els), card = h("div", { class: "card" });
   card.append(h("div", { class: "chart-title" }, h("h3", {}, "Freed capacity per element"), h("span", { class: "muted" }, "Peak load before − after the battery, in MVA")));
-  const top = rows.reduce((m, x) => (!m || x.freed > m.freed ? x : m), null);
+  const total = rows.reduce((t, x) => t + x.freed, 0), gained = rows.reduce((t, x) => t + Math.max(0, x.freed), 0), lost = rows.reduce((t, x) => t + Math.min(0, x.freed), 0);
   const kp = (eyebrow, big, unit, d) => h("div", { class: "kpi" }, h("div", { class: "eyebrow" }, eyebrow), h("div", { class: "big" }, h("span", {}, big), h("span", { class: "from" }, unit)), h("div", { class: "d" }, d));
   card.append(h("div", { class: "kpis" },
     kp("On the most loaded element", fmt(bottle.freed, 2), "MVA freed", `${bottle.name}: ${fmt(bottle.b, 2)} → ${fmt(bottle.a, 2)} MVA (${fmt(bottle.pb, 1)} → ${fmt(bottle.pa, 1)} % of ${fmt(bottle.rt, 1)} MVA)`),
     kp("Relief per battery MW", fmt(bottle.freed / st.mw, 2), "MVA per MW", `${fmt(bottle.freed, 2)} MVA freed by a ${fmt(st.mw, 1)} MW battery`),
     kp("Relief per battery MWh", fmt(bottle.freed / st.mwh, 3), "MVA per MWh", `${fmt(bottle.freed, 2)} MVA freed by ${fmt(st.mwh, 1)} MWh of storage`),
-    kp("Most freed on one element", fmt(top.freed, 2), "MVA", `${top.name}: ${fmt(top.b, 2)} → ${fmt(top.a, 2)} MVA`)));
+    kp("Total freed MVA", fmt(total, 2), "MVA", `Sum over all ${rows.length} lines and transformers${lost < -0.005 ? ` (${fmtSigned(gained, 2)} gained, ${fmt(lost, 2)} lost)` : ""}`)));
+  const on = !!S.showFreedChart, cb = h("input", { type: "checkbox", role: "switch" }); cb.checked = on;
+  cb.onchange = () => { S.showFreedChart = cb.checked; card.replaceWith(freedCard(r, els)); };
+  card.querySelector(".chart-title").append(h("span", { class: "spacer" }), h("label", { class: "switch" }, cb, h("span", { class: "track", "aria-hidden": "true" }), h("span", {}, "Show per element")));
+  if (!on) return card;
   const sorted = rows.slice().sort((a, b) => b.freed - a.freed);
   const W = 760, rowH = 24, padL = 196, padR = 190, H = sorted.length * rowH + 18;
   const mn = Math.min(0, ...sorted.map((x) => x.freed)), mxv = Math.max(1e-9, ...sorted.map((x) => x.freed));
