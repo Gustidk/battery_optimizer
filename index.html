@@ -587,7 +587,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "c65e866fd1";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "915d3a4118";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -708,10 +708,10 @@ function startEngine() {
 
 // ============================================================ state
 const DEFAULT_STUDY = {
-  place: "Aarhus", lat: 56.15, lon: 10.21, start: "2025-07-07", days: 7,
+  place: "Aarhus", lat: 56.15, lon: 10.21, start: "2025-06-01", days: 10,
   mw: 4, mwh: 16, eta_c: 95, eta_d: 95, soc: 50, bus: 8,
-  objective: "quadratic_peak", wl: 1, wt: 1, levels: 9, mode: "one", battery: true,
-  price: false, area: "DK1", wear: 0, load_f: 1, der_f: 20,
+  objective: "quadratic_peak", wl: 1, wt: 2, levels: 9, mode: "one", battery: true,
+  price: false, area: "DK1", wear: 0, load_f: 1, der_f: 25,
   g_stc: 1000, g_pr: 100, g_vin: 3, g_vrated: 12, g_vout: 25, g_exp: 3,        // solar and wind production formulas
   sn_on: true, sn_powers: "1, 2, 4", sn_hours: "1, 2, 4",
   lx_on: false, lx_pct: 100,                                                  // profit as second priority                                 // battery size sensitivity
@@ -721,7 +721,7 @@ const PLACES = { Aarhus: [56.15, 10.21], "Copenhagen": [55.68, 12.57], Odense: [
 const S = {
   spec: null, sel: null, tool: "select", pendingBus: null,
   view: { tx: 0, ty: 0, k: 1 }, netView: "diagram", tableTab: "buses",
-  check: null, study: (() => { const st = { ...DEFAULT_STUDY, ...store.get("study", {}) }; if (st.v !== 3) { st.v = 3; Object.assign(st, { mode: "all", objective: "quadratic_peak", sn_n: 4, der_f: 20, start: "2025-07-07", days: 7 }); } return st; })(),
+  check: null, study: (() => { const st = { ...DEFAULT_STUDY, ...store.get("study", {}) }; if (st.v !== 4) { st.v = 4; Object.assign(st, { mode: "all", objective: "quadratic_peak", sn_n: 4, der_f: 25, wl: 1, wt: 2, start: "2025-06-01", days: 10 }); } return st; })(),
   weather: null, priceData: null, results: null, running: false, dirty: true, advanced: false, flowView: false, flowMode: store.get("flowMode", "pq"), keep: null, netValues: store.get("netValues", false),
 };
 const U = 70; // px per diagram unit
@@ -1763,6 +1763,15 @@ function drawModelCard() {
 // ---- explainer video pop-up (Network tab)
 // Put your video next to index.html under the name below (mp4 or webm), or set `link` to a YouTube or Vimeo address.
 const EXPLAINER_VIDEO = { title: "How the model works", file: "explainer.mp4", link: "" };
+/** Visit counter (GoatCounter, no cookies). The name chosen at goatcounter.com. Empty = no counting. */
+const GOATCOUNTER_NAME = "gustidk";
+(function startVisitCounter() {
+  if (!GOATCOUNTER_NAME || /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return;       // never counts local testing
+  const sc = document.createElement("script"); sc.async = true; sc.src = "https://gc.zgo.at/count.js";
+  sc.dataset.goatcounter = `https://${GOATCOUNTER_NAME}.goatcounter.com/count`; document.head.append(sc);
+  const note = document.createElement("p"); note.className = "muted"; note.style.cssText = "text-align:center;font-size:12px;margin:18px 0 24px";
+  note.textContent = "Anonymous visit counting with GoatCounter (no cookies)."; document.body.append(note);
+})();
 function videoEmbedUrl(link) {
   try {
     const u = new URL(link), host = u.hostname.replace(/^www\./, "");
