@@ -90,7 +90,7 @@ def init_worker(path, spec, ghi, wind, price):
 def run_cell(cell):
     from gridbess.batch import batch_cell
     prm = {"settings": SETTINGS, "mw": cell["mw"], "hours": cell["hrs"], "pct": cell["pct"], "der_factor": cell["factor"],
-           "objective": "quadratic_peak", "screen": {"mode": cell["screen"], "weeks": 4, "days_each": 7, "levels": 5}}
+           "objective": "quadratic_peak", "screen": {"mode": cell["screen"], "weeks": 4, "days_each": 7, "levels": 5, "verify": 2}}
     for attempt in range(2):
         try:
             out = json.loads(batch_cell(_G["spec"], _G["ghi"], _G["wind"], _G["price"], json.dumps(prm), None))
@@ -102,7 +102,7 @@ def run_cell(cell):
 
 FIELDS = ["Groen_andel_pct", "DER_faktor", "Strategi", "Netprioritet_pct", "BESS_MW", "BESS_timer", "BESS_MWh", "Optimal_node", "Netvenlighed_pct", "Indtjening_DKK",
           "Indtjening_tabt_ift_max_indtjening_DKK", "Netvenlighed_tabt_ift_max_netvenlighed_procentpoint", "Max_belastning_foer_pct", "Max_belastning_efter_pct",
-          "Aekvivalente_cyklusser", "Dage_simuleret"]
+          "Aekvivalente_cyklusser", "Dage_simuleret", "Netprioritet_brugt_pct", "Reserveloesning"]
 
 
 def to_rows(results):
@@ -115,7 +115,7 @@ def to_rows(results):
         g = groups[(r["green"], r["mw"], r["hrs"])]
         mr, mn = max(x["indtjening"] for x in g), max(x["netvenlighed_pct"] for x in g)
         rows.append([r["green"], r["factor"], strategy(r["pct"]), r["pct"], r["mw"], r["hrs"], r["mw"] * r["hrs"], r["bus_name"], r["netvenlighed_pct"], r["indtjening"],
-                     mr - r["indtjening"], mn - r["netvenlighed_pct"], r["max_loading_before_pct"], r["max_loading_after_pct"], r["cycles"], r["hours"] / 24])
+                     mr - r["indtjening"], mn - r["netvenlighed_pct"], r["max_loading_before_pct"], r["max_loading_after_pct"], r["cycles"], r["hours"] / 24, r.get("pct_used") if r.get("pct_used") is not None else r["pct"], "Ja" if r.get("fallback") else "Nej"])
     return rows
 
 
@@ -151,7 +151,8 @@ def merge(files, out):
             cells.append({"green": num("Groen_andel_pct"), "factor": num("DER_faktor"), "pct": num("Netprioritet_pct"), "mw": num("BESS_MW"), "hrs": num("BESS_timer"),
                           "bus_name": d["Optimal_node"], "netvenlighed_pct": num("Netvenlighed_pct"), "indtjening": num("Indtjening_DKK"),
                           "max_loading_before_pct": num("Max_belastning_foer_pct"), "max_loading_after_pct": num("Max_belastning_efter_pct"),
-                          "cycles": num("Aekvivalente_cyklusser"), "hours": num("Dage_simuleret") * 24})
+                          "cycles": num("Aekvivalente_cyklusser"), "hours": num("Dage_simuleret") * 24,
+                          "pct_used": num("Netprioritet_brugt_pct") if d.get("Netprioritet_brugt_pct") else None, "fallback": d.get("Reserveloesning") == "Ja"})
     rows = to_rows(cells)
     write_csv(out, rows, True); write_csv(re.sub(r"\.csv$", "", out) + "_decimalpunktum.csv", rows, False)
     print(f"Merged {len(rows)} rows into {out}")
@@ -179,6 +180,7 @@ def main():
     cells = [{"green": g, "factor": g / 100 / share, "pct": p, "mw": m, "hrs": h, "screen": a.screen}
              for g in greens for p in pcts for m in mws for h in hrs]
     workers = a.workers or os.cpu_count() or 2
+    print(f"Running {a.days} days of 2025 (screening: {a.screen}).", flush=True)
     print(f"{len(cells)} simulations, {workers} parallel processes. DER factors: " +
           ", ".join(f"{g:g} % -> x{g / 100 / share:.2f}" for g in greens), flush=True)
     t0 = time.time(); results = []

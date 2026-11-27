@@ -1,13 +1,23 @@
 name: Dataopsamling
 
 # Kør den fra fanen "Actions" på GitHub: vælg "Dataopsamling" og tryk "Run workflow".
-# Hver grønne andel kører som sit eget job, så de tre kører side om side.
+# Hver kombination af grøn andel, batterieffekt og varighed kører som sit eget job (alle strategier i samme job),
+# så mange jobs kører samtidig.
 on:
   workflow_dispatch:
     inputs:
       greens:
         description: "Grøn energi i % (komma mellem værdierne)"
         default: "5,15,25"
+      powers:
+        description: "Batterieffekt i MW"
+        default: "1,2,4"
+      hours:
+        description: "Batterivarighed i timer"
+        default: "1,2,4"
+      pcts:
+        description: "Strategier: prioritet på netvenlighed i % (100 = maks netvenlighed, 0 = maks indtjening)"
+        default: "100,90,70,50,0"
       days:
         description: "Antal dage der simuleres (365 = hele 2025, 7 = hurtig test)"
         default: "365"
@@ -26,11 +36,15 @@ jobs:
       - id: m
         env:
           GREENS: ${{ inputs.greens }}
+          POWERS: ${{ inputs.powers }}
+          HOURS: ${{ inputs.hours }}
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os, re
-          g = [x for x in re.split(r"[\s,;]+", os.environ["GREENS"]) if x]
-          print("matrix=" + json.dumps({"green": g}))
+          def lst(k):
+              return [x for x in re.split(r"[\s,;]+", os.environ[k]) if x]
+          inc = [{"green": g, "power": p, "hours": h} for g in lst("GREENS") for p in lst("POWERS") for h in lst("HOURS")]
+          print("matrix=" + json.dumps({"include": inc}))
           PY
 
   simuler:
@@ -46,12 +60,15 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install numpy scipy highspy clarabel
-      - name: Simulér ${{ matrix.green }} % grøn energi
-        run: python batch_run.py --greens "${{ matrix.green }}" --days "${{ inputs.days }}" --screen "${{ inputs.screen }}" --out "del_${{ matrix.green }}.csv"
+      - name: Simulér ${{ inputs.days }} dage · ${{ matrix.green }} % grøn, ${{ matrix.power }} MW, ${{ matrix.hours }} timer
+        run: >
+          python batch_run.py --greens "${{ matrix.green }}" --powers "${{ matrix.power }}" --hours "${{ matrix.hours }}"
+          --pcts "${{ inputs.pcts }}" --days "${{ inputs.days }}" --screen "${{ inputs.screen }}"
+          --out "del_${{ matrix.green }}_${{ matrix.power }}_${{ matrix.hours }}.csv"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: del-${{ matrix.green }}
+          name: del-${{ matrix.green }}-${{ matrix.power }}-${{ matrix.hours }}
           path: del_*.csv
 
   saml:

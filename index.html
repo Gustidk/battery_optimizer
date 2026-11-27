@@ -2118,7 +2118,7 @@ function renderBatchTable() {
   const th = (t) => h("th", { text: t });
   const tb = h("tbody");
   for (const r of rows) tb.append(h("tr", {}, h("td", { text: `${fmt(r.green, 1)} %` }), h("td", { text: batchStrategy(r.pct) }), h("td", { text: `${fmt(r.mw, 1)} MW × ${fmt(r.hrs, 1)} h` }),
-    r.error ? h("td", { colspan: 3, text: "Error: " + r.error }) : [h("td", { text: r.bus_name }), h("td", { class: "n", text: fmt(r.netvenlighed_pct, 1) + " %" }), h("td", { class: "n", text: fmt(r.indtjening, 0) })].flat()));
+    r.error ? h("td", { colspan: 3, text: "Error: " + r.error }) : [h("td", { text: r.bus_name + (r.fallback ? " ⚠" : ""), title: r.fallback ? "The profit stage failed; this result is the pure grid-friendly plan." : "" }), h("td", { class: "n", text: fmt(r.netvenlighed_pct, 1) + " %" }), h("td", { class: "n", text: fmt(r.indtjening, 0) })].flat()));
   box.append(h("div", { class: "tblwrap", style: { maxHeight: "340px", marginTop: "10px" } },
     h("table", { class: "t" }, h("thead", {}, h("tr", {}, th("Green share"), th("Strategy"), th("Battery"), th("Optimal node"), th("Netvenlighed"), th("Indtjening (DKK)"))), tb)));
 }
@@ -2128,12 +2128,12 @@ function batchCsv(decimalComma) {
   const groups = new Map();
   for (const r of rows) { const k = `${r.green}|${r.mw}|${r.hrs}`; (groups.get(k) || groups.set(k, []).get(k)).push(r); }
   const head = ["Groen_andel_pct", "DER_faktor", "Strategi", "Netprioritet_pct", "BESS_MW", "BESS_timer", "BESS_MWh", "Optimal_node", "Netvenlighed_pct", "Indtjening_DKK",
-    "Indtjening_tabt_ift_max_indtjening_DKK", "Netvenlighed_tabt_ift_max_netvenlighed_procentpoint", "Max_belastning_foer_pct", "Max_belastning_efter_pct", "Aekvivalente_cyklusser", "Dage_simuleret"];
+    "Indtjening_tabt_ift_max_indtjening_DKK", "Netvenlighed_tabt_ift_max_netvenlighed_procentpoint", "Max_belastning_foer_pct", "Max_belastning_efter_pct", "Aekvivalente_cyklusser", "Dage_simuleret", "Netprioritet_brugt_pct", "Reserveloesning"];
   const lines = [head.join(sep)];
   for (const r of rows) {
     const g = groups.get(`${r.green}|${r.mw}|${r.hrs}`), maxRev = Math.max(...g.map((x) => x.indtjening)), maxNet = Math.max(...g.map((x) => x.netvenlighed_pct));
     lines.push([num(r.green, 2), num(r.factor, 3), batchStrategy(r.pct), num(r.pct, 1), num(r.mw, 2), num(r.hrs, 2), num(r.mw * r.hrs, 2), r.bus_name, num(r.netvenlighed_pct, 3), num(r.indtjening, 0),
-      num(maxRev - r.indtjening, 0), num(maxNet - r.netvenlighed_pct, 3), num(r.max_loading_before_pct, 2), num(r.max_loading_after_pct, 2), num(r.cycles, 1), num(r.hours / 24, 0)].join(sep));
+      num(maxRev - r.indtjening, 0), num(maxNet - r.netvenlighed_pct, 3), num(r.max_loading_before_pct, 2), num(r.max_loading_after_pct, 2), num(r.cycles, 1), num(r.hours / 24, 0), num(r.pct_used ?? r.pct, 2), r.fallback ? "Ja" : "Nej"].join(sep));
   }
   return "﻿" + lines.join("\r\n") + "\r\n";
 }
@@ -2219,7 +2219,7 @@ async function runBatch() {
         let row = null;
         for (let attempt = 0; attempt < 2 && !row?.bus_name; attempt++) {
           try {
-            const prm = { settings: base, mw: cell.mw, hours: cell.hrs, pct: cell.pct, der_factor: factor, objective: "quadratic_peak", screen: { mode: plan.screen, weeks: 4, days_each: 7, levels: 5 } };
+            const prm = { settings: base, mw: cell.mw, hours: cell.hrs, pct: cell.pct, der_factor: factor, objective: "quadratic_peak", screen: { mode: plan.screen, weeks: 4, days_each: 7, levels: 5, verify: 2 } };
             const out = await e.json("batch_cell", [spec, ghiJ, windJ, priceJ, JSON.stringify(prm)], (st, fr) => { const o = BATCH.inflight.get(wi); if (o) { o.frac = fr; o.stage = st; scheduleBatchUI(); } });
             row = { ...cell, factor, ...out };
           } catch (err) { if (BATCH.cancel || err.message === "Cancelled") return; row = { ...cell, factor, error: err.message }; }
