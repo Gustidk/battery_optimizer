@@ -90,7 +90,7 @@ def init_worker(path, spec, ghi, wind, price):
 def run_cell(cell):
     from gridbess.batch import batch_cell
     prm = {"settings": SETTINGS, "mw": cell["mw"], "hours": cell["hrs"], "pct": cell["pct"], "der_factor": cell["factor"],
-           "objective": "quadratic_peak", "screen": {"mode": cell["screen"], "weeks": 4, "days_each": 7, "levels": 5, "verify": 2}}
+           "objective": "quadratic_peak", "keep_schedule": True, "screen": {"mode": cell["screen"], "weeks": 4, "days_each": 7, "levels": 5, "verify": 2}}
     for attempt in range(2):
         try:
             out = json.loads(batch_cell(_G["spec"], _G["ghi"], _G["wind"], _G["price"], json.dumps(prm), None))
@@ -142,7 +142,7 @@ def read_csv(path):
     return out
 
 
-def merge(files, out):
+def merge(files, out, excel=None, grunddata=None, serier=()):
     files = [f for f in files if not f.endswith("_decimalpunktum.csv")]
     cells = []
     for p in files:
@@ -156,6 +156,125 @@ def merge(files, out):
     rows = to_rows(cells)
     write_csv(out, rows, True); write_csv(re.sub(r"\.csv$", "", out) + "_decimalpunktum.csv", rows, False)
     print(f"Merged {len(rows)} rows into {out}")
+    if excel:
+        write_excel(excel, rows, grunddata, [p for p in serier])
+        print("Wrote", excel)
+
+
+def hour_labels(days):
+    start = datetime.fromisoformat(YEAR_START)
+    return [(start + timedelta(hours=i)).strftime("%Y-%m-%d %H:%M") for i in range(days * 24)]
+
+
+def write_series(path, results, days):
+    """The battery schedule (MW, positive = discharging, negative = charging) of every finished simulation, one column each."""
+    ok = sorted([r for r in results if not r.get("error") and r.get("schedule_mw")], key=lambda r: (r["green"], -r["pct"], r["mw"], r["hrs"]))
+    if not ok:
+        return
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(",".join(["Tid"] + [f"{r['green']:g}|{r['pct']:g}|{r['mw']:g}|{r['hrs']:g}|{r['bus_name']}" for r in ok]) + "\n")
+        times = hour_labels(days)
+        for i in range(days * 24):
+            fh.write(",".join([times[i]] + [f"{r['schedule_mw'][i]:.4f}" for r in ok]) + "\n")
+
+
+def write_grunddata(path, greens, days, synthetic):
+    """Weather, price, the power of every load and the PV and wind production for each green share, hour by hour."""
+    path_e = load_engine()
+    import numpy as np
+    from gridbess.api import batch_green_share
+    from gridbess.study import Study
+    from gridbess.templates import cigre_mv
+    spec = cigre_mv()
+    ghi, wind = get_weather(days, synthetic); price = get_prices(days)
+    share = json.loads(batch_green_share(json.dumps(spec), json.dumps(ghi), json.dumps(wind), json.dumps(SETTINGS)))["share_at_1"]
+    cols = [("Tid", hour_labels(days)), ("Globalstraaling_W_m2", ghi), ("Vindhastighed_100m_m_s", wind), ("Elpris_DKK_MWh", price)]
+    base = Study(spec, np.asarray(ghi), np.asarray(wind), dict(SETTINGS, der_factor=1.0))
+    load_mw = base.load_scale * base.net.load_p                       # (hours, loads), MW
+    lnames = [l.get("name", f"Load {l['id']}") for l in spec["loads"]]
+    for j, nm in enumerate(lnames):
+        cols.append((f"Forbrug_{nm}_MW", load_mw[:, j].tolist()))
+    cols.append(("Forbrug_samlet_MW", load_mw.sum(axis=1).tolist()))
+    for g in greens:
+        st = Study(spec, np.asarray(ghi), np.asarray(wind), dict(SETTINGS, der_factor=g / 100 / share))
+        gen = st.sgen_scale * st.net.sgen_p                          # (hours, generators), MW, with the DER factor applied
+        types = [str(t).upper() for t in st.net.sgen_type]
+        pv = sum((gen[:, k] for k, t in enumerate(types) if t == "PV"), np.zeros(len(ghi)))
+        wp = sum((gen[:, k] for k, t in enumerate(types) if t in ("WP", "WIND")), np.zeros(len(ghi)))
+        cols.append((f"PV_samlet_MW_gron{g:g}", pv.tolist())); cols.append((f"Vind_samlet_MW_gron{g:g}", wp.tolist()))
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(",".join(c[0] for c in cols) + "\n")
+        for i in range(days * 24):
+            fh.write(",".join(str(cols[0][1][i]) if k == 0 else f"{cols[k][1][i]:.5f}" for k in range(len(cols))) + "\n")
+
+
+def read_plain_csv(path):
+    with open(path, encoding="utf-8") as fh:
+        head = fh.readline().rstrip("\n").split(",")
+        data = [line.rstrip("\n").split(",") for line in fh if line.strip()]
+    return head, data
+
+
+def write_excel(path, rows, grunddata, serier):
+    import xlsxwriter
+    wb = xlsxwriter.Workbook(path)
+    hf = wb.add_format({"bold": True, "text_wrap": True, "valign": "top", "bg_color": "#E8EEF0", "border": 1})
+    n2 = wb.add_format({"num_format": "0.00"}); n0 = wb.add_format({"num_format": "#,##0"}); n4 = wb.add_format({"num_format": "0.0000"})
+    ws = wb.add_worksheet("Resultater")
+    for c, name in enumerate(FIELDS):
+        ws.write(0, c, name, hf)
+    for r, row in enumerate(rows, 1):
+        for c, v in enumerate(row):
+            if isinstance(v, (int, float)):
+                ws.write_number(r, c, v, n0 if FIELDS[c] in ("Indtjening_DKK", "Indtjening_tabt_ift_max_indtjening_DKK") else n2)
+            else:
+                ws.write(r, c, v)
+    ws.set_row(0, 48); ws.set_column(0, len(FIELDS) - 1, 16); ws.freeze_panes(1, 0); ws.autofilter(0, 0, len(rows), len(FIELDS) - 1)
+    # ---- hourly series
+    wt = wb.add_worksheet("Timeserier")
+    head, data = read_plain_csv(grunddata)
+    series = []                                                       # (label, values)
+    for p in serier:
+        sh, sd = read_plain_csv(p)
+        for k, key in enumerate(sh[1:], 1):
+            green, pct, mw, hrs, node = key.split("|")
+            pct_f = float(pct)
+            strat = "Max netvenlighed" if pct_f >= 100 else "Max indtjening" if pct_f <= 0 else f"Mix {pct_f:g} %"
+            series.append(((float(green), -pct_f, float(mw), float(hrs)), f"Batteri_MW | {green} % groen | {strat} | {mw} MW x {hrs} h | {node}", [row[k] for row in sd]))
+    series.sort(key=lambda t: t[0])
+    labels = [h for h in head] + [s[1] for s in series]
+    for c, name in enumerate(labels):
+        wt.write(0, c, name, hf)
+    n = len(data)
+    for i in range(n):
+        wt.write_string(i + 1, 0, data[i][0])
+        for c in range(1, len(head)):
+            wt.write_number(i + 1, c, float(data[i][c]), n2)
+        for k, s in enumerate(series):
+            wt.write_number(i + 1, len(head) + k, float(s[2][i]), n4)
+    wt.set_row(0, 80); wt.set_column(0, 0, 17); wt.set_column(1, len(labels) - 1, 15); wt.freeze_panes(1, 1)
+    # ---- explanation
+    we = wb.add_worksheet("Forklaring")
+    lines = [
+        "Dataopsamling: strategisk udbygning af BESS i distributionsnettet (CIGRE MV, TB 575).",
+        "",
+        "Fanen Resultater: en række pr. simulering (grøn andel x strategi x batteristørrelse) for hele 2025.",
+        "  Netvenlighed_pct: fald i den vægtede sum af kvadrerede spidsbelastninger (linjer vægt 1, transformere vægt 2). Højere er mere netvenlig.",
+        "  Indtjening_DKK: sum over året af elpris x batteriets effekt (afladning positiv, opladning negativ), uden slidomkostning.",
+        "  Optimal_node: noden med mest netvenlighed for den strategi og størrelse.",
+        "  Indtjening_tabt og Netvenlighed_tabt: forskel til den bedste strategi i samme gruppe (samme grønne andel og størrelse).",
+        "",
+        "Fanen Timeserier: hver time i 2025 (dansk lokal tid).",
+        "  Globalstraaling og Vindhastighed: vejrdata fra Open-Meteo (Aarhus). Elpris: DK1 spotpris i DKK/MWh.",
+        "  Forbrug_...: effekten af hver last i MW. PV_samlet og Vind_samlet: produktion i MW for hver grøn andel (DER-faktoren er indregnet).",
+        "  Batteri_MW: batteriets lademønster. Positiv = aflader (leverer til nettet), negativ = oplader. Én kolonne pr. simulering.",
+        "",
+        "Grøn andel = årlig produktion fra sol og vind divideret med årligt energiforbrug i nettet. DER-faktoren er sat, så andelen rammes præcist.",
+    ]
+    for i, t in enumerate(lines):
+        we.write(i, 0, t)
+    we.set_column(0, 0, 140)
+    wb.close()
 
 
 def main():
@@ -166,9 +285,15 @@ def main():
     ap.add_argument("--workers", type=int, default=0); ap.add_argument("--out", default="resultater.csv")
     ap.add_argument("--synthetic-weather", action="store_true", help="only for tests: no internet needed")
     ap.add_argument("--merge", nargs="+")
+    ap.add_argument("--series", default=None, help="file for the hourly battery schedules (default: serie_<out>)")
+    ap.add_argument("--grunddata", default=None, help="write weather, price, loads and PV/wind to this file and stop")
+    ap.add_argument("--excel", default=None, help="with --merge: also write an Excel workbook")
+    ap.add_argument("--grunddata-in", default=None); ap.add_argument("--series-in", nargs="+", default=[])
     a = ap.parse_args()
+    if a.grunddata:
+        write_grunddata(a.grunddata, parse_list(a.greens), a.days, a.synthetic_weather); print("Wrote", a.grunddata); return
     if a.merge:
-        return merge(a.merge, a.out)
+        return merge(a.merge, a.out, a.excel, a.grunddata_in, a.series_in)
     path = load_engine()
     from gridbess.api import batch_green_share
     from gridbess.templates import cigre_mv
@@ -194,6 +319,7 @@ def main():
                   f" | elapsed {el / 60:.0f} min, about {eta / 60:.0f} min left", flush=True)
             rows = to_rows(results); write_csv(a.out, rows, True)        # partial results are always on disk
     rows = to_rows(results); write_csv(a.out, rows, True); write_csv(re.sub(r"\.csv$", "", a.out) + "_decimalpunktum.csv", rows, False)
+    write_series(a.series or os.path.join(os.path.dirname(a.out) or ".", "serie_" + os.path.basename(a.out)), results, a.days)
     bad = [r for r in results if r.get("error")]
     print(f"Done in {(time.time() - t0) / 60:.1f} min. {len(rows)} rows written to {a.out}" + (f", {len(bad)} failed" if bad else ""))
     if bad:

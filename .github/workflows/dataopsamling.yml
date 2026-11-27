@@ -69,10 +69,28 @@ jobs:
         if: always()
         with:
           name: del-${{ matrix.green }}-${{ matrix.power }}-${{ matrix.hours }}
-          path: del_*.csv
+          path: |
+            del_*.csv
+            serie_*.csv
+
+  grunddata:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy scipy highspy clarabel
+      - name: Vejr, elpris, forbrug og produktion time for time
+        run: python batch_run.py --grunddata grunddata.csv --greens "${{ inputs.greens }}" --days "${{ inputs.days }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: del-grunddata
+          path: grunddata.csv
 
   saml:
-    needs: simuler
+    needs: [simuler, grunddata]
     if: always() && needs.simuler.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
@@ -82,9 +100,15 @@ jobs:
           pattern: del-*
           merge-multiple: true
           path: dele
-      - name: Saml til én CSV
-        run: python3 batch_run.py --merge dele/*.csv --out dataopsamling_2025.csv
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install xlsxwriter
+      - name: Saml til CSV og Excel
+        run: python batch_run.py --merge dele/del_*.csv --out dataopsamling_2025.csv --excel dataopsamling_2025.xlsx --grunddata-in dele/grunddata.csv --series-in dele/serie_*.csv
       - uses: actions/upload-artifact@v4
         with:
           name: dataopsamling
-          path: dataopsamling_2025*.csv
+          path: |
+            dataopsamling_2025*.csv
+            dataopsamling_2025.xlsx
