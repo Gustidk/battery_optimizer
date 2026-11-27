@@ -34,6 +34,8 @@ const handlers = {
   compare_bus: ([bus, obj]) => api.compare_bus(bus, obj),
   sensitivity: ([bus, obj, mw, hours]) => api.sensitivity(bus, obj, mw, hours),
   run_all: ([obj, buses]) => api.run_all(obj, buses),
+  batch_green_share: ([spec, ghi, wind, settings]) => api.batch_green_share(spec, ghi, wind, settings),
+  batch_cell: ([spec, ghi, wind, price, params]) => api.batch_cell(spec, ghi, wind, price, params, progress),
   loadflow: () => api.loadflow(),
   hour_detail: ([hour, bus, p]) => api.hour_detail(hour, bus == null ? -1 : bus, p || 0),
 };

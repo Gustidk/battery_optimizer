@@ -186,6 +186,8 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
 #lx-fields.disabled { opacity: .45; }
 #sn-fields.disabled { opacity: .45; }
 #sn-fields input.bad, .f input.bad { border-color: var(--crit); }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+#bt-table table { width: 100%; }
 .sn-matrix { border-collapse: separate; border-spacing: 3px; margin-top: 8px; font-family: "IBM Plex Mono", monospace; font-size: 12px; }
 .sn-matrix th { font-weight: 500; color: var(--muted); text-align: center; padding: 3px 10px; white-space: nowrap; }
 .sn-matrix tbody th { text-align: right; }
@@ -524,6 +526,29 @@ table.t input.cell[type="number"] { width: 92px; text-align: right; }
         </div>
         <div id="r-msg"></div>
       </div>
+      <div class="card span12 batonly" id="card-batch">
+        <div class="row"><h3>Data collection</h3><span class="muted" style="font-size:12px">all simulations in one go, finished with one CSV</span></div>
+        <p class="sub" style="margin:6px 0 10px;font-size:13px">Runs every combination of green energy share, strategy and battery size for the whole of 2025. For each one the program finds the best node, runs the whole period there and writes <b>Netvenlighed</b>, <b>Indtjening</b> and <b>Optimal node</b> to the CSV. The green share is the annual production of PV and wind divided by the annual energy used by the loads; the program sets the “DER × every PV and wind generator” factor to hit it. Strategy 100 is maximum grid-friendliness, 0 is maximum revenue, and values in between are mixes.</p>
+        <div class="grid2">
+          <label class="f"><span>Green energy shares <span class="u">% · commas between values</span></span><input id="bt-greens" type="text" autocomplete="off" spellcheck="false"></label>
+          <label class="f"><span>Strategies <span class="u">priority on grid-friendliness, %</span></span><input id="bt-pcts" type="text" autocomplete="off" spellcheck="false"></label>
+          <label class="f"><span>Battery powers <span class="u">MW</span></span><input id="bt-powers" type="text" autocomplete="off" spellcheck="false"></label>
+          <label class="f"><span>Battery durations <span class="u">hours</span></span><input id="bt-hours" type="text" autocomplete="off" spellcheck="false"></label>
+          <label class="f"><span>Days to simulate <span class="u">365 = the whole of 2025 · use 7 for a quick test</span></span><input id="bt-days" type="number" min="2" max="365" step="1"></label>
+          <label class="f"><span>Finding the best node</span><select id="bt-screen"><option value="weeks">Four representative weeks, then the whole period on the best node (fast)</option><option value="year">The whole period on every node (slow, exact)</option></select></label>
+          <label class="f"><span>Parallel engines <span class="u">empty = chosen from your processor · each uses memory</span></span><input id="bt-engines" type="number" min="1" max="6" step="1"></label>
+        </div>
+        <div id="bt-summary" style="font-size:13px;margin-top:10px"></div>
+        <div class="runbar" style="margin-top:12px">
+          <div class="progress" id="bt-progress" hidden><div class="bar"><i id="bt-bar"></i></div><div class="txt" id="bt-txt"></div></div>
+          <span class="spacer"></span>
+          <button class="btn" id="bt-cancel" hidden>Stop</button>
+          <button class="btn primary" id="bt-run">Simulate everything</button>
+        </div>
+        <div id="bt-msg"></div><div id="bt-factors"></div>
+        <div class="row" style="margin-top:10px"><button class="btn" id="bt-csv-da" type="button">Download CSV (Excel, Danish)</button><button class="btn" id="bt-csv-en" type="button">Download CSV (decimal point)</button><span class="spacer"></span><button class="btn ghost" id="bt-reset" type="button">Clear saved results</button></div>
+        <div id="bt-table"></div>
+      </div>
     </div>
   </section>
 
@@ -587,7 +612,7 @@ subject to    peakₗ ≥ loadingₗ(t, battery power at t)     for every elemen
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <script>
 "use strict";
-const BUILD_ID = "915d3a4118";   // changes on every build, so browsers never reuse an old worker or engine
+const BUILD_ID = "2f8ca7aade";   // changes on every build, so browsers never reuse an old worker or engine
 /* Grid-Friendly Battery Planner -- browser front end.
    The Python engine (gridbess) runs in a Web Worker via Pyodide; see worker.js. */
 
@@ -1615,7 +1640,7 @@ function initStudyForm() {
   bindNum("#b-mw", "mw"); bindNum("#b-mwh", "mwh"); bindNum("#b-etac", "eta_c"); bindNum("#b-etad", "eta_d"); bindNum("#b-soc", "soc");
   bindNum("#o-wl", "wl"); bindNum("#o-wt", "wt"); initModelCard();
   bindNum("#sc-load", "load_f"); bindNum("#sc-der", "der_f");
-  initGenCard(); initSensCard(); initLexCard();
+  initGenCard(); initSensCard(); initLexCard(); initBatchCard();
   for (const id of ["#sc-load", "#sc-der"]) $(id).addEventListener("input", () => { const k = id === "#sc-load" ? "load_f" : "der_f"; const v = Number($(id).value); if (isFinite(v) && v >= 0) { S.study[k] = v; renderScenarioPreview(); } });
   renderScenarioPreview();
   initPriceForm();
@@ -1973,12 +1998,12 @@ function parsePriceCsv(text) {
   return { rows, currency: cur, areas: [...new Set(rows.map((r) => r.area).filter(Boolean))] };
 }
 // Hourly price series for the chosen period (naive local time, like the weather).
-function priceSeries() {
+function priceSeries(startIso = S.study.start, nHours = periodHours()) {
   const d = S.priceData; if (!d) return null;
   const sums = new Map();
   for (const r of d.rows) { if (d.areas.length && r.area !== S.study.area) continue; const e = sums.get(r.key) || [0, 0]; e[0] += r.v; e[1]++; sums.set(r.key, e); }
   if (!sums.size) return { error: `The file has no prices for ${S.study.area}. It contains: ${d.areas.join(", ")}.` };
-  const n = periodHours(), start = new Date(S.study.start + "T00:00:00Z");
+  const n = nHours, start = new Date(startIso + "T00:00:00Z");
   const out = []; let missing = 0, last = null;
   for (let i = 0; i < n; i++) {
     const key = new Date(start.getTime() + i * 3600e3).toISOString().slice(0, 13);
@@ -2025,6 +2050,211 @@ function initPriceForm() {
   $("#p-builtin").onclick = () => { S.priceData = builtinPriceData(); S.dirty = true; renderPriceStatus(); toast("Using the built-in DK1 2025 prices."); };
   if (!S.priceData) S.priceData = builtinPriceData();
   applyPriceMode();
+}
+
+// ============================================================ data collection (all simulations in one go)
+const DEFAULT_BATCH = { greens: "5, 15, 25", pcts: "100, 90, 70, 50, 0", powers: "1, 2, 4", hours: "1, 2, 4", days: 365, screen: "weeks", engines: 0 };
+const BATCH_YEAR = "2025-01-01";
+const BATCH = { cfg: { ...DEFAULT_BATCH, ...store.get("batchCfg", {}) }, rows: store.get("batchRows", []), sig: store.get("batchSig", ""),
+  running: false, cancel: false, factors: null, t0: 0, doneNow: 0, todo: 0, total: 0, before: 0, inflight: new Map(), extra: [], wake: null, status: "", draw: 0 };
+const batchStrategy = (pct) => (pct >= 100 ? "Max netvenlighed" : pct <= 0 ? "Max indtjening" : `Mix ${fmt(pct, 0)} %`);
+function parseNums(text, { min = 0, max = Infinity, what = "value" } = {}) {
+  const out = [];
+  for (const p of String(text ?? "").split(/[\s,;]+/).filter(Boolean)) {
+    const v = Number(p.replace(",", "."));
+    if (!isFinite(v) || v < min || v > max) return { error: `“${p}” is not a valid ${what} (between ${min} and ${max}).` };
+    if (!out.includes(+v.toFixed(4))) out.push(+v.toFixed(4));
+  }
+  if (!out.length) return { error: `Type at least one ${what}.` };
+  if (out.length > 8) return { error: "At most 8 values per list." };
+  return { list: out };
+}
+function batchPlan() {
+  const c = BATCH.cfg;
+  const g = parseNums(c.greens, { min: 0.1, max: 90, what: "green share in %" }), p = parseNums(c.pcts, { min: 0, max: 100, what: "priority in %" });
+  const mw = parseNums(c.powers, { min: 0.1, max: 100, what: "power in MW" }), hr = parseNums(c.hours, { min: 0.25, max: 24, what: "duration in hours" });
+  for (const x of [g, p, mw, hr]) if (x.error) return { error: x.error };
+  const days = Math.round(Number(c.days));
+  if (!(days >= 2 && days <= 365)) return { error: "Days to simulate must be between 2 and 365." };
+  const cells = [];
+  for (const gr of g.list) for (const pc of p.list) for (const m of mw.list) for (const hh of hr.list) cells.push({ green: gr, pct: pc, mw: m, hrs: hh, key: [gr, pc, m, hh].join("|") });
+  return { greens: g.list, pcts: p.list, powers: mw.list, hours: hr.list, days, cells, screen: c.screen === "year" ? "year" : "weeks" };
+}
+function batchSettings() {
+  const s = settingsPayload();
+  return { ...s, profit_priority: true, throughput_cost: Number(S.study.wear) || 0, n_levels: Math.max(3, Math.round(S.study.levels) | 1) };
+}
+function hashStr(t) { let x = 5381; for (let i = 0; i < t.length; i++) x = ((x << 5) + x + t.charCodeAt(i)) | 0; return (x >>> 0).toString(36); }
+function batchSignature(plan) {
+  return hashStr(JSON.stringify([plan.greens, plan.pcts, plan.powers, plan.hours, plan.days, plan.screen, batchSettings(), S.study.lat, S.study.lon, S.study.area, S.spec]));
+}
+const fmtDur = (sec) => { sec = Math.max(0, Math.round(sec)); const hh = Math.floor(sec / 3600), mm = Math.floor((sec % 3600) / 60);
+  return hh >= 1 ? `${hh} h ${String(mm).padStart(2, "0")} min` : mm >= 1 ? `${mm} min` : `${sec} s`; };
+function batchPriorSeconds(plan, k) {
+  const frac = Math.min(1, 28 / plan.days), per = 165 * (plan.screen === "year" ? 15 : 1 + 14 * 0.8 * frac) * Math.pow(plan.days / 365, 1.2);
+  return per * plan.cells.length / Math.max(1, k);
+}
+function batchEngines() { return Math.max(1, Math.min(6, Math.round(Number(BATCH.cfg.engines)) || nWorkers())); }
+function updateBatchSummary() {
+  const box = $("#bt-summary"); if (!box) return; box.innerHTML = "";
+  const plan = batchPlan();
+  if (plan.error) { box.append(h("div", { class: "note warn", text: plan.error })); return; }
+  const wp = (S.spec?.sgens || []).filter((g) => String(g.type).toUpperCase() === "WP").map((g) => fmt(g.p_mw, 3) + " MW");
+  const k = batchEngines(), est = batchPriorSeconds(plan, k);
+  box.append(h("div", {}, h("b", {}, `${plan.greens.length} × ${plan.pcts.length} × ${plan.powers.length * plan.hours.length} = ${plan.cells.length} simulations`),
+    ` · ${plan.days} days of 2025 · every simulation finds its best node and reports grid-friendliness (Netvenlighed), revenue (Indtjening) and that node.`));
+  box.append(h("div", { class: "muted", style: { marginTop: "4px" } },
+    `Taken from the Study tab: weights lines ${fmt(S.study.wl, 1)} / transformers ${fmt(S.study.wt, 1)} · wind turbine ${wp.join(", ") || "none"} · efficiency ${fmt(S.study.eta_c, 0)} / ${fmt(S.study.eta_d, 0)} % · start SOC ${fmt(S.study.soc, 0)} % · ${S.study.levels} power levels · prices: built-in DK1 2025 · place ${S.study.place || ""} (${fmt(S.study.lat, 2)}, ${fmt(S.study.lon, 2)}).`));
+  box.append(h("div", { class: "muted", style: { marginTop: "4px" } },
+    `Rough time estimate with ${k} parallel engine${k > 1 ? "s" : ""}: about ${fmtDur(est)}. The estimate becomes accurate once the first simulations are done. Keep this tab open while it runs.`));
+}
+function batchMsg(text, kind = "err") { const m = $("#bt-msg"); m.innerHTML = ""; if (text) m.append(h("div", { class: "note " + kind, style: { marginTop: "10px" }, text })); }
+function sortedBatchRows() {
+  return [...BATCH.rows].sort((a, b) => a.green - b.green || b.pct - a.pct || a.mw - b.mw || a.hrs - b.hrs);
+}
+function renderBatchTable() {
+  const box = $("#bt-table"); if (!box) return; box.innerHTML = "";
+  const rows = sortedBatchRows(); if (!rows.length) return;
+  const th = (t) => h("th", { text: t });
+  const tb = h("tbody");
+  for (const r of rows) tb.append(h("tr", {}, h("td", { text: `${fmt(r.green, 1)} %` }), h("td", { text: batchStrategy(r.pct) }), h("td", { text: `${fmt(r.mw, 1)} MW × ${fmt(r.hrs, 1)} h` }),
+    r.error ? h("td", { colspan: 3, text: "Error: " + r.error }) : [h("td", { text: r.bus_name }), h("td", { class: "n", text: fmt(r.netvenlighed_pct, 1) + " %" }), h("td", { class: "n", text: fmt(r.indtjening, 0) })].flat()));
+  box.append(h("div", { class: "tblwrap", style: { maxHeight: "340px", marginTop: "10px" } },
+    h("table", { class: "t" }, h("thead", {}, h("tr", {}, th("Green share"), th("Strategy"), th("Battery"), th("Optimal node"), th("Netvenlighed"), th("Indtjening (DKK)"))), tb)));
+}
+function batchCsv(decimalComma) {
+  const rows = sortedBatchRows().filter((r) => !r.error), sep = decimalComma ? ";" : ",";
+  const num = (v, d = 4) => (v == null || !isFinite(v) ? "" : decimalComma ? String(+v.toFixed(d)).replace(".", ",") : String(+v.toFixed(d)));
+  const groups = new Map();
+  for (const r of rows) { const k = `${r.green}|${r.mw}|${r.hrs}`; (groups.get(k) || groups.set(k, []).get(k)).push(r); }
+  const head = ["Groen_andel_pct", "DER_faktor", "Strategi", "Netprioritet_pct", "BESS_MW", "BESS_timer", "BESS_MWh", "Optimal_node", "Netvenlighed_pct", "Indtjening_DKK",
+    "Indtjening_tabt_ift_max_indtjening_DKK", "Netvenlighed_tabt_ift_max_netvenlighed_procentpoint", "Max_belastning_foer_pct", "Max_belastning_efter_pct", "Aekvivalente_cyklusser", "Dage_simuleret"];
+  const lines = [head.join(sep)];
+  for (const r of rows) {
+    const g = groups.get(`${r.green}|${r.mw}|${r.hrs}`), maxRev = Math.max(...g.map((x) => x.indtjening)), maxNet = Math.max(...g.map((x) => x.netvenlighed_pct));
+    lines.push([num(r.green, 2), num(r.factor, 3), batchStrategy(r.pct), num(r.pct, 1), num(r.mw, 2), num(r.hrs, 2), num(r.mw * r.hrs, 2), r.bus_name, num(r.netvenlighed_pct, 3), num(r.indtjening, 0),
+      num(maxRev - r.indtjening, 0), num(maxNet - r.netvenlighed_pct, 3), num(r.max_loading_before_pct, 2), num(r.max_loading_after_pct, 2), num(r.cycles, 1), num(r.hours / 24, 0)].join(sep));
+  }
+  return "﻿" + lines.join("\r\n") + "\r\n";
+}
+function downloadText(name, text) {
+  const a = h("a", { href: URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" })), download: name }); document.body.append(a); a.click(); a.remove();
+}
+function batchProgress() {
+  let inflight = 0; for (const o of BATCH.inflight.values()) inflight += o.frac;
+  const p = BATCH.todo ? Math.min(1, (BATCH.doneNow + inflight) / BATCH.todo) : 1, el = (performance.now() - BATCH.t0) / 1000;
+  return { p, el, eta: p > 0.01 && BATCH.running ? el * (1 - p) / p : null };
+}
+function drawBatchUI() {
+  BATCH.draw = 0;
+  const prog = $("#bt-progress"); if (!prog) return;
+  prog.hidden = !BATCH.running && !BATCH.status;
+  const { p, el, eta } = batchProgress();
+  const doneAll = BATCH.before + BATCH.doneNow;
+  $("#bt-bar").style.width = Math.round((BATCH.running ? (BATCH.before + p * BATCH.todo) / Math.max(1, BATCH.total) : doneAll / Math.max(1, BATCH.total)) * 100) + "%";
+  const lines = [];
+  if (BATCH.status) lines.push(BATCH.status);
+  if (BATCH.running && BATCH.total) {
+    lines.push(`${doneAll} of ${BATCH.total} simulations done${BATCH.before ? ` (${BATCH.before} from an earlier run)` : ""} · ${fmt(100 * (BATCH.before + p * BATCH.todo) / BATCH.total, 1)} %`);
+    lines.push(`Elapsed ${fmtDur(el)} · ` + (eta != null ? `about ${fmtDur(eta)} left · expected finish ${new Date(Date.now() + eta * 1000).toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit" })}` : "estimating the time left…"));
+    for (const o of BATCH.inflight.values()) lines.push(`Now: ${fmt(o.cell.green, 1)} % green · ${batchStrategy(o.cell.pct)} · ${fmt(o.cell.mw, 1)} MW × ${fmt(o.cell.hrs, 1)} h — ${o.stage} (${Math.round(o.frac * 100)} %)`);
+  }
+  $("#bt-txt").innerHTML = ""; for (const l of lines) $("#bt-txt").append(h("div", { text: l }));
+}
+const scheduleBatchUI = () => { if (!BATCH.draw) BATCH.draw = requestAnimationFrame(drawBatchUI); };
+function renderBatchFactors() {
+  const box = $("#bt-factors"); if (!box) return; box.innerHTML = "";
+  if (!BATCH.factors) return;
+  box.append(h("div", { class: "note", style: { marginTop: "10px" } }, h("b", {}, "DER factors found: "),
+    BATCH.factors.map((f) => `${fmt(f.green, 1)} % green energy → DER × ${fmt(f.factor, 2)}`).join(" · "),
+    ` (annual PV and wind production divided by annual load energy: ${fmt(BATCH.factors[0].share1 * 100, 3)} % at DER × 1)`));
+}
+async function batchWeather(days) {
+  const n = days * 24, end = addDays(BATCH_YEAR, days - 1);
+  const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${S.study.lat}&longitude=${S.study.lon}&start_date=${BATCH_YEAR}&end_date=${end}&hourly=shortwave_radiation,wind_speed_100m&wind_speed_unit=ms&timezone=auto`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Open-Meteo answered ${r.status}. ${(await r.text()).slice(0, 160)}`);
+  const hr = (await r.json()).hourly || {};
+  const ghi = (hr.shortwave_radiation || []).map((v) => Number(v) || 0), wind = (hr.wind_speed_100m || []).map((v) => Number(v) || 0);
+  if (ghi.length < n - 24 || wind.length < n - 24) throw new Error(`Open-Meteo returned ${ghi.length} hours but ${n} were needed.`);
+  while (ghi.length < n) { ghi.push(ghi[ghi.length - 1]); wind.push(wind[wind.length - 1]); }
+  return { ghi: ghi.slice(0, n), wind: wind.slice(0, n) };
+}
+function persistBatch() { store.set("batchRows", BATCH.rows); store.set("batchSig", BATCH.sig); }
+async function runBatch() {
+  if (BATCH.running) return;
+  if (S.running) return batchMsg("A study is running. Wait for it to finish first.");
+  if (!engine || !engine.ready) return batchMsg("The engine is still starting. Try again in a moment.");
+  const plan = batchPlan(); if (plan.error) return batchMsg(plan.error);
+  if (!S.spec) return batchMsg("There is no network loaded.");
+  batchMsg("");
+  BATCH.running = true; BATCH.cancel = false; S.running = true; $("#r-run").disabled = true; $("#bt-run").hidden = true; $("#bt-cancel").hidden = false;
+  BATCH.t0 = performance.now(); BATCH.doneNow = 0; BATCH.inflight.clear(); BATCH.factors = null; renderBatchFactors();
+  try { BATCH.wake = await navigator.wakeLock?.request("screen"); } catch { BATCH.wake = null; }
+  try {
+    BATCH.status = "Fetching the 2025 weather from Open-Meteo…"; scheduleBatchUI();
+    const n = plan.days * 24, wx = await batchWeather(plan.days);
+    if (!S.priceData) S.priceData = builtinPriceData();
+    const ps = priceSeries(BATCH_YEAR, n); if (ps.error) throw new Error(ps.error);
+    const ghiJ = JSON.stringify(wx.ghi), windJ = JSON.stringify(wx.wind), priceJ = JSON.stringify(ps.values), spec = JSON.stringify(S.spec), base = batchSettings();
+    BATCH.status = "Finding the DER factor for each green share…"; scheduleBatchUI();
+    const gs = await engine.json("batch_green_share", [spec, ghiJ, windJ, JSON.stringify(base)]);
+    if (!(gs.share_at_1 > 0)) throw new Error("The network has no PV or wind production, so a green share cannot be set.");
+    BATCH.factors = plan.greens.map((g) => ({ green: g, factor: g / 100 / gs.share_at_1, share1: gs.share_at_1 })); renderBatchFactors();
+    const sig = batchSignature(plan);
+    if (sig !== BATCH.sig) { BATCH.rows = []; BATCH.sig = sig; }
+    BATCH.rows = BATCH.rows.filter((r) => !r.error);
+    const done = new Set(BATCH.rows.map((r) => r.key)), todo = plan.cells.filter((c) => !done.has(c.key));
+    BATCH.total = plan.cells.length; BATCH.before = BATCH.total - todo.length; BATCH.todo = todo.length; persistBatch(); renderBatchTable();
+    const k = Math.max(1, Math.min(todo.length || 1, batchEngines())), engs = [engine];
+    BATCH.status = `Starting ${k} engine${k > 1 ? "s" : ""}…`; scheduleBatchUI();
+    for (let i = 1; i < k; i++) { const e = new Engine(); BATCH.extra.push(e); engs.push(e); }
+    await Promise.all(engs.map((e) => e.readyP));
+    BATCH.status = ""; BATCH.t0 = performance.now(); scheduleBatchUI();
+    let next = 0;
+    const worker = async (e, wi) => {
+      while (!BATCH.cancel && next < todo.length) {
+        const cell = todo[next++], factor = BATCH.factors.find((f) => f.green === cell.green).factor;
+        BATCH.inflight.set(wi, { cell, frac: 0, stage: "starting" }); scheduleBatchUI();
+        let row = null;
+        for (let attempt = 0; attempt < 2 && !row?.bus_name; attempt++) {
+          try {
+            const prm = { settings: base, mw: cell.mw, hours: cell.hrs, pct: cell.pct, der_factor: factor, objective: "quadratic_peak", screen: { mode: plan.screen, weeks: 4, days_each: 7, levels: 5 } };
+            const out = await e.json("batch_cell", [spec, ghiJ, windJ, priceJ, JSON.stringify(prm)], (st, fr) => { const o = BATCH.inflight.get(wi); if (o) { o.frac = fr; o.stage = st; scheduleBatchUI(); } });
+            row = { ...cell, factor, ...out };
+          } catch (err) { if (BATCH.cancel || err.message === "Cancelled") return; row = { ...cell, factor, error: err.message }; }
+        }
+        BATCH.inflight.delete(wi); BATCH.rows.push(row); BATCH.doneNow++; persistBatch(); renderBatchTable(); scheduleBatchUI();
+      }
+    };
+    await Promise.all(engs.map((e, i) => worker(e, i)));
+    if (!BATCH.cancel) { BATCH.status = `Done: ${BATCH.rows.filter((r) => !r.error).length} of ${BATCH.total} simulations in ${fmtDur((performance.now() - BATCH.t0) / 1000)}. Download the CSV below.`; toast("Data collection finished."); }
+  } catch (e) {
+    if (!BATCH.cancel) batchMsg(e.message);
+  } finally {
+    BATCH.extra.forEach((e) => e.terminate()); BATCH.extra = []; BATCH.inflight.clear();
+    try { await BATCH.wake?.release(); } catch { /* already released */ } BATCH.wake = null;
+    if (BATCH.cancel) BATCH.status = `Stopped after ${BATCH.before + BATCH.doneNow} of ${BATCH.total} simulations. Press Simulate everything to continue where it stopped.`;
+    BATCH.running = false; S.running = false; $("#r-run").disabled = false; $("#bt-run").hidden = false; $("#bt-cancel").hidden = true; scheduleBatchUI(); renderBatchTable();
+  }
+}
+function cancelBatch() {
+  BATCH.cancel = true; BATCH.extra.forEach((e) => e.terminate()); BATCH.extra = [];
+  engine.terminate(); startEngine();
+}
+function initBatchCard() {
+  for (const [id, key] of [["#bt-greens", "greens"], ["#bt-pcts", "pcts"], ["#bt-powers", "powers"], ["#bt-hours", "hours"], ["#bt-days", "days"], ["#bt-screen", "screen"], ["#bt-engines", "engines"]]) {
+    const el = $(id); el.value = BATCH.cfg[key] || (key === "engines" ? "" : el.value);
+    const upd = () => { BATCH.cfg[key] = el.value; store.set("batchCfg", BATCH.cfg); updateBatchSummary(); };
+    el.addEventListener("input", upd); el.addEventListener("change", upd);
+  }
+  $("#bt-engines").placeholder = String(nWorkers());
+  $("#bt-run").onclick = runBatch; $("#bt-cancel").onclick = cancelBatch;
+  $("#bt-csv-da").onclick = () => BATCH.rows.length ? downloadText("bess_dataopsamling_2025.csv", batchCsv(true)) : batchMsg("There are no finished simulations yet.", "warn");
+  $("#bt-csv-en").onclick = () => BATCH.rows.length ? downloadText("bess_dataopsamling_2025_dot.csv", batchCsv(false)) : batchMsg("There are no finished simulations yet.", "warn");
+  $("#bt-reset").onclick = () => { if (BATCH.running) return; BATCH.rows = []; BATCH.sig = ""; BATCH.status = ""; persistBatch(); renderBatchTable(); scheduleBatchUI(); toast("Saved results cleared."); };
+  updateBatchSummary(); renderBatchTable();
+  if (BATCH.rows.length) { BATCH.status = `${BATCH.rows.length} finished simulations are saved in this browser from an earlier run.`; $("#bt-progress").hidden = false; drawBatchUI(); }
 }
 
 // ============================================================ running
@@ -2887,7 +3117,7 @@ function showView(v) {
   for (const s of ["network", "study", "results", "method"]) $("#view-" + s).hidden = s !== v;
   if (v === "network") requestAnimationFrame(drawEditor);
   if (v === "results") renderResults();
-  if (v === "study") { syncStudyForm(); renderWeatherStatus(); }
+  if (v === "study") { syncStudyForm(); renderWeatherStatus(); updateBatchSummary(); }
   if (location.hash.slice(1) !== v) history.replaceState(null, "", "#" + v);
   window.scrollTo(0, 0);
 }

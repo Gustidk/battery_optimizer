@@ -1,0 +1,73 @@
+name: Dataopsamling
+
+# Kør den fra fanen "Actions" på GitHub: vælg "Dataopsamling" og tryk "Run workflow".
+# Hver grønne andel kører som sit eget job, så de tre kører side om side.
+on:
+  workflow_dispatch:
+    inputs:
+      greens:
+        description: "Grøn energi i % (komma mellem værdierne)"
+        default: "5,15,25"
+      days:
+        description: "Antal dage der simuleres (365 = hele 2025, 7 = hurtig test)"
+        default: "365"
+      screen:
+        description: "Find bedste node: weeks = fire repræsentative uger (hurtig), year = hele perioden på alle noder (langsom)"
+        type: choice
+        options: [weeks, year]
+        default: weeks
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          GREENS: ${{ inputs.greens }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, re
+          g = [x for x in re.split(r"[\s,;]+", os.environ["GREENS"]) if x]
+          print("matrix=" + json.dumps({"green": g}))
+          PY
+
+  simuler:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy scipy highspy clarabel
+      - name: Simulér ${{ matrix.green }} % grøn energi
+        run: python batch_run.py --greens "${{ matrix.green }}" --days "${{ inputs.days }}" --screen "${{ inputs.screen }}" --out "del_${{ matrix.green }}.csv"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: del-${{ matrix.green }}
+          path: del_*.csv
+
+  saml:
+    needs: simuler
+    if: always() && needs.simuler.result != 'cancelled'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: del-*
+          merge-multiple: true
+          path: dele
+      - name: Saml til én CSV
+        run: python3 batch_run.py --merge dele/*.csv --out dataopsamling_2025.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dataopsamling
+          path: dataopsamling_2025*.csv
